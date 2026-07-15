@@ -1,0 +1,24 @@
+{
+  "name": "codex-notify-hooks",
+  "version": "0.4.1",
+  "description": "Install privacy-first macOS Codex notifications with permission prompts and best-effort session routing.",
+  "author": {
+    "name": "Dylon Cai",
+    "email": "61169715+Dylonsword@users.noreply.github.com"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "AI Session Notifier",
+    "shortDescription": "Private macOS alerts and session routing for Codex.",
+    "longDescription": "AI Session Notifier installs global Codex hooks that show prominent macOS notifications when a turn stops or Codex waits for permission. It keeps a bounded, redacted local event ledger, applies noise controls, and attempts to reopen the originating Codex or VS Code session.",
+    "developerName": "Dylon Cai",
+    "category": "Productivity",
+    "capabilities": ["Hooks", "Notifications", "Session routing", "Private local ledger"],
+    "defaultPrompt": [
+      "Install Codex notification hooks.",
+      "Test my Codex notification hook.",
+      "Explain the Codex notify hook setup."
+    ],
+    "brandColor": "#2563EB"
+  }
+}

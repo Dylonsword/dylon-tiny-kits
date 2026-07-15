@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  unix:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Run Unix tests
+        run: tools/ai-session-notifier/tests/run-tests.sh
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Run portable Python tests
+        shell: pwsh
+        run: python -m unittest discover -s tools/ai-session-notifier/tests -p 'test_*.py' -v
+      - name: Exercise PowerShell adapter
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP "ai-session-notifier"
+          $env:AI_SESSION_NOTIFIER_CONFIG_DIR = Join-Path $root "config"
+          $env:AI_SESSION_NOTIFIER_DATA_DIR = Join-Path $root "data"
+          $env:AI_SESSION_NOTIFIER_DRY_RUN = "1"
+          '{"hook_event_name":"Notification","notification_type":"permission_prompt","session_id":"windows-test","cwd":"C:\\work","last_assistant_message":"private"}' |
+            & .\tools\ai-session-notifier\claude-code-plugin\bin\ai-session-notify.ps1
+          $events = Get-Content (Join-Path $root "data\events.jsonl") | ForEach-Object { $_ | ConvertFrom-Json }
+          if ($events.Count -ne 1) { throw "Expected one event" }
+          if ($events[0].lastAssistantMessage -ne "") { throw "Message excerpt must be disabled by default" }
+          $registry = Get-Content (Join-Path $root "data\sessions.json") -Raw | ConvertFrom-Json
+          if ($null -eq $registry.sessions.'claude-code:windows-test') { throw "Session route missing" }

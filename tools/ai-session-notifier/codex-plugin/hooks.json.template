@@ -1,0 +1,29 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "__CODEX_NOTIFY_SCRIPT__",
+            "timeout": 5,
+            "statusMessage": "Sending Codex turn notification"
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "__CODEX_NOTIFY_SCRIPT__",
+            "timeout": 5,
+            "statusMessage": "Sending Codex approval notification"
+          }
+        ]
+      }
+    ]
+  }
+}

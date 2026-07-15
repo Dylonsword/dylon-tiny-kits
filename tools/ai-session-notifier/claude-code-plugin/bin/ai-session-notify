@@ -1,0 +1,533 @@
+#!/usr/bin/env sh
+set -eu
+umask 077
+
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+plugin_root=$(CDPATH= cd -- "$script_dir/.." && pwd)
+payload=$(cat 2>/dev/null || true)
+app_config_dir="${AI_SESSION_NOTIFIER_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/ai-session-notifier}"
+app_data_dir="${AI_SESSION_NOTIFIER_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/ai-session-notifier}"
+app_config_file="${AI_SESSION_NOTIFIER_CONFIG:-$app_config_dir/config.json}"
+app_events_file="${AI_SESSION_NOTIFIER_EVENTS_FILE:-$app_data_dir/events.jsonl}"
+app_sessions_file="${AI_SESSION_NOTIFIER_SESSIONS_FILE:-$app_data_dir/sessions.json}"
+app_state_dir="$app_data_dir/state"
+
+json_get() {
+  printf '%s' "$payload" | perl -MJSON::PP -0777 -e '
+    my @keys = @ARGV;
+    my $raw = <STDIN>;
+    my $data = eval { decode_json($raw) } || {};
+    for my $key (@keys) {
+      if (ref($data) eq "HASH" && defined $data->{$key} && !ref($data->{$key}) && $data->{$key} =~ /\S/) {
+        print $data->{$key};
+        exit 0;
+      }
+    }
+  ' "$@" 2>/dev/null || true
+}
+
+urlencode() {
+  perl -CS -pe 's/([^A-Za-z0-9_.~-])/sprintf("%%%02X", ord($1))/ge' 2>/dev/null
+}
+
+log_line() {
+  base="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+  dir="$base/hooks"
+  mkdir -p "$dir" 2>/dev/null || return 0
+  printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$dir/ai-session-notifier.log" 2>/dev/null || true
+}
+
+find_terminal_notifier() {
+  if command -v terminal-notifier >/dev/null 2>&1; then
+    command -v terminal-notifier
+    return 0
+  fi
+  if [ -x /opt/homebrew/bin/terminal-notifier ]; then
+    printf '%s\n' /opt/homebrew/bin/terminal-notifier
+    return 0
+  fi
+  if [ -x /usr/local/bin/terminal-notifier ]; then
+    printf '%s\n' /usr/local/bin/terminal-notifier
+    return 0
+  fi
+  return 1
+}
+
+ensure_app_state() {
+  mkdir -p "$app_config_dir" "$app_data_dir" "$app_state_dir" 2>/dev/null || true
+  chmod 700 "$app_config_dir" "$app_data_dir" "$app_state_dir" 2>/dev/null || true
+  if [ ! -f "$app_config_file" ]; then
+    cat > "$app_config_file" <<'JSON' 2>/dev/null || true
+{
+  "version": 2,
+  "notifications": {
+    "enabled": true,
+    "dialogs": true,
+    "sound": true,
+    "ignoreDnD": true,
+    "iconPath": "",
+    "codexIconPath": "",
+    "claudeIconPath": ""
+  },
+  "noise": {
+    "dedupeSeconds": 20,
+    "observationMode": "notify"
+  },
+  "ledger": {
+    "enabled": true,
+    "includeMessageExcerpt": false,
+    "maxMessageChars": 260,
+    "retentionDays": 30,
+    "maxBytes": 5242880
+  },
+  "routing": {
+    "openWorkspaceFirst": true,
+    "focusVSCodeWindow": true
+  },
+  "debug": {
+    "saveRawPayload": false,
+    "logEnabled": false
+  }
+}
+JSON
+  fi
+  chmod 600 "$app_config_file" "$app_events_file" "$app_sessions_file" 2>/dev/null || true
+}
+
+config_get() {
+  key=$1
+  default_value=${2:-}
+  if [ ! -f "$app_config_file" ]; then
+    printf '%s' "$default_value"
+    return 0
+  fi
+
+  CONFIG_FILE="$app_config_file" CONFIG_KEY="$key" CONFIG_DEFAULT="$default_value" perl -MJSON::PP -e '
+    my $file = $ENV{CONFIG_FILE};
+    my $key = $ENV{CONFIG_KEY} // "";
+    my $default = $ENV{CONFIG_DEFAULT} // "";
+    local $/;
+    open my $fh, "<", $file or do { print $default; exit 0 };
+    my $text = <$fh>;
+    close $fh;
+    my $data = eval { decode_json($text) };
+    if ($@ || ref($data) ne "HASH") { print $default; exit 0 }
+    my $node = $data;
+    for my $part (split /\./, $key) {
+      if (ref($node) eq "HASH" && exists $node->{$part}) {
+        $node = $node->{$part};
+      } else {
+        print $default;
+        exit 0;
+      }
+    }
+    if (!ref($node)) {
+      print $node;
+    } elsif (ref($node) eq "JSON::PP::Boolean") {
+      print $node ? "true" : "false";
+    } else {
+      print $default;
+    }
+  ' 2>/dev/null || printf '%s' "$default_value"
+}
+
+flag_enabled() {
+  value=$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')
+  case "$value" in
+    true|1|yes|on) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+hash_key() {
+  hash=$(printf '%s' "$1" | perl -MDigest::MD5=md5_hex -0e 'local $/; print md5_hex(<STDIN>);' 2>/dev/null || true)
+  if [ -z "$hash" ]; then
+    hash=$(printf '%s' "$1" | cksum | awk '{print $1}' 2>/dev/null || true)
+  fi
+  printf '%s' "${hash:-global}"
+}
+
+apply_dedupe() {
+  seconds=$1
+  key=$2
+  case "$seconds" in
+    ''|*[!0-9]*) return 0 ;;
+  esac
+  if [ "$seconds" -le 0 ]; then
+    return 0
+  fi
+
+  state_file="$app_state_dir/$(hash_key "$key").last"
+  now=$(date '+%s')
+  last=
+  if [ -f "$state_file" ]; then
+    last=$(cat "$state_file" 2>/dev/null || true)
+  fi
+  case "$last" in
+    ''|*[!0-9]*) ;;
+    *)
+      age=$((now - last))
+      if [ "$age" -ge 0 ] && [ "$age" -lt "$seconds" ]; then
+        suppressed=true
+        suppression_reason="dedupe:${age}s"
+        return 0
+      fi
+      ;;
+  esac
+  printf '%s' "$now" > "$state_file" 2>/dev/null || true
+}
+
+write_shared_ledger() {
+  if ! flag_enabled "$ledger_enabled"; then
+    return 0
+  fi
+
+  AS_EVENTS_FILE="$app_events_file" \
+  AS_SESSIONS_FILE="$app_sessions_file" \
+  AS_TIMESTAMP="$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+  AS_TOOL="Claude Code" \
+  AS_EVENT="${event_name:-unknown}" \
+  AS_NOTIFICATION_TYPE="${notification_type:-}" \
+  AS_CATEGORY="$category" \
+  AS_THREAD_ID="${session_id:-}" \
+  AS_SOURCE="claude-code" \
+  AS_CWD="${cwd:-}" \
+  AS_TARGET_URL="${target_url:-}" \
+  AS_TITLE="$title" \
+  AS_MESSAGE="$message" \
+  AS_LAST_MESSAGE="${last_message:-}" \
+  AS_SUPPRESSED="$suppressed" \
+  AS_SUPPRESSION_REASON="$suppression_reason" \
+  AS_MAX_MESSAGE_CHARS="$max_message_chars" \
+  AS_INCLUDE_MESSAGE_EXCERPT="$include_message_excerpt" \
+  perl -MJSON::PP -MEncode=decode -e '
+    use Fcntl qw(:flock SEEK_SET);
+    sub env_text {
+      my ($key) = @_;
+      return decode("UTF-8", $ENV{$key} // "", 1);
+    }
+    my $max = int($ENV{AS_MAX_MESSAGE_CHARS} || 260);
+    $max = 260 if $max <= 0;
+    my $last = (($ENV{AS_INCLUDE_MESSAGE_EXCERPT} // "") eq "true")
+      ? env_text("AS_LAST_MESSAGE") : "";
+    if (length($last) > $max) {
+      $last = substr($last, 0, $max - 3) . "...";
+    }
+    my $entry = {
+      schemaVersion => 1,
+      timestamp => env_text("AS_TIMESTAMP"),
+      tool => env_text("AS_TOOL"),
+      event => env_text("AS_EVENT"),
+      notificationType => env_text("AS_NOTIFICATION_TYPE"),
+      category => env_text("AS_CATEGORY"),
+      threadId => env_text("AS_THREAD_ID"),
+      source => env_text("AS_SOURCE"),
+      cwd => env_text("AS_CWD"),
+      targetUrl => env_text("AS_TARGET_URL"),
+      title => env_text("AS_TITLE"),
+      message => env_text("AS_MESSAGE"),
+      lastAssistantMessage => $last,
+      suppressed => (($ENV{AS_SUPPRESSED} // "") eq "true" ? JSON::PP::true : JSON::PP::false),
+      suppressionReason => env_text("AS_SUPPRESSION_REASON"),
+    };
+    my $json = JSON::PP->new->canonical->ascii(0);
+    my $events_file = $ENV{AS_EVENTS_FILE};
+    if (defined $events_file && length $events_file) {
+      open my $events, ">>", $events_file;
+      if ($events) {
+        flock($events, LOCK_EX);
+        binmode $events, ":encoding(UTF-8)";
+        print {$events} $json->encode($entry), "\n";
+        close $events;
+      }
+    }
+
+    my $sessions_file = $ENV{AS_SESSIONS_FILE};
+    my $identity = $entry->{threadId} || $entry->{cwd};
+    if (defined $sessions_file && length $sessions_file && length $identity) {
+      open my $sessions, "+>>", $sessions_file;
+      if ($sessions) {
+        flock($sessions, LOCK_EX);
+        seek($sessions, 0, SEEK_SET);
+        local $/;
+        my $text = <$sessions> // "";
+        my $registry = eval { decode_json($text) };
+        $registry = {} if $@ || ref($registry) ne "HASH";
+        $registry->{version} = 1;
+        $registry->{sessions} = {} if ref($registry->{sessions}) ne "HASH";
+        my $tool = lc($entry->{tool});
+        $tool =~ s/\s+/-/g;
+        my $key = $tool . ":" . $identity;
+        $registry->{sessions}{$key} = $entry;
+        $registry->{updatedAt} = $entry->{timestamp};
+        seek($sessions, 0, SEEK_SET);
+        truncate($sessions, 0);
+        binmode $sessions, ":encoding(UTF-8)";
+        print {$sessions} JSON::PP->new->canonical->ascii(0)->pretty->encode($registry);
+        close $sessions;
+      }
+    }
+  ' 2>/dev/null || true
+}
+
+cleanup_storage_if_due() {
+  now=$(date '+%s')
+  last=$(cat "$app_state_dir/cleanup.last" 2>/dev/null || true)
+  case "$last" in
+    ''|*[!0-9]*) ;;
+    *)
+      age=$((now - last))
+      if [ "$age" -ge 0 ] && [ "$age" -lt 86400 ]; then
+        return 0
+      fi
+      ;;
+  esac
+
+  retention_days=$(config_get "ledger.retentionDays" "30")
+  max_bytes=$(config_get "ledger.maxBytes" "5242880")
+  case "$retention_days" in ''|*[!0-9]*) retention_days=30 ;; esac
+  case "$max_bytes" in ''|*[!0-9]*) max_bytes=5242880 ;; esac
+  cutoff=$(date -u -v-"${retention_days}"d '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null \
+    || date -u -d "${retention_days} days ago" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null \
+    || true)
+
+  AS_EVENTS_FILE="$app_events_file" \
+  AS_SESSIONS_FILE="$app_sessions_file" \
+  AS_CUTOFF="$cutoff" \
+  AS_MAX_BYTES="$max_bytes" \
+  perl -MJSON::PP -e '
+    use Fcntl qw(:flock SEEK_SET);
+    my $cutoff = $ENV{AS_CUTOFF} // "";
+    my $max = int($ENV{AS_MAX_BYTES} || 0);
+
+    my $events_file = $ENV{AS_EVENTS_FILE};
+    if (defined $events_file && -f $events_file && open my $events, "+<", $events_file) {
+      flock($events, LOCK_EX);
+      my @kept;
+      while (my $line = <$events>) {
+        my $entry = eval { decode_json($line) };
+        next if $@ || ref($entry) ne "HASH";
+        my $timestamp = $entry->{timestamp} // "";
+        push @kept, $line if !length($cutoff) || !length($timestamp) || $timestamp ge $cutoff;
+      }
+      if ($max > 0) {
+        my $bytes = 0;
+        my @bounded;
+        for my $line (reverse @kept) {
+          my $size = length($line);
+          last if @bounded && $bytes + $size > $max;
+          unshift @bounded, $line;
+          $bytes += $size;
+        }
+        @kept = @bounded;
+      }
+      seek($events, 0, SEEK_SET);
+      truncate($events, 0);
+      print {$events} @kept;
+      close $events;
+    }
+
+    my $sessions_file = $ENV{AS_SESSIONS_FILE};
+    if (defined $sessions_file && -f $sessions_file && open my $sessions, "+<", $sessions_file) {
+      flock($sessions, LOCK_EX);
+      local $/;
+      my $text = <$sessions> // "";
+      my $registry = eval { decode_json($text) };
+      if (!$@ && ref($registry) eq "HASH" && ref($registry->{sessions}) eq "HASH") {
+        for my $key (keys %{$registry->{sessions}}) {
+          my $entry = $registry->{sessions}{$key};
+          my $timestamp = ref($entry) eq "HASH" ? ($entry->{timestamp} // "") : "";
+          delete $registry->{sessions}{$key}
+            if length($cutoff) && length($timestamp) && $timestamp lt $cutoff;
+        }
+        seek($sessions, 0, SEEK_SET);
+        truncate($sessions, 0);
+        print {$sessions} JSON::PP->new->canonical->ascii(0)->pretty->encode($registry);
+      }
+      close $sessions;
+    }
+  ' 2>/dev/null || true
+
+  printf '%s' "$now" > "$app_state_dir/cleanup.last" 2>/dev/null || true
+}
+
+ensure_app_state
+
+event_name=$(json_get hook_event_name event_name)
+notification_type=$(json_get notification_type type)
+session_id=$(json_get session_id sessionId conversation_id conversationId thread_id threadId)
+cwd=$(json_get cwd workspace_dir project_dir)
+cwd=${cwd:-${PWD:-}}
+last_message=$(json_get last_assistant_message lastAssistantMessage message)
+category=attention
+
+case "$notification_type" in
+  permission_prompt)
+    category=permission
+    title="Claude Code needs permission"
+    message="Approve or reject the permission request to continue."
+    sound="Hero"
+    ;;
+  idle_prompt)
+    category=idle
+    title="Claude Code is waiting"
+    message="The current turn is idle and waiting for review."
+    sound="Glass"
+    ;;
+  *)
+    title="Claude Code notification"
+    message="Claude Code needs your attention."
+    sound="Glass"
+    ;;
+esac
+
+target_url=""
+if [ -n "$cwd" ]; then
+  encoded_cwd=$(printf '%s' "$cwd" | urlencode)
+  encoded_prompt=$(printf '%s' "Return to this Claude Code workspace." | urlencode)
+  target_url="claude-cli://open?cwd=$encoded_cwd&q=$encoded_prompt"
+fi
+
+icon_path=$(config_get "notifications.claudeIconPath" "")
+if [ -z "$icon_path" ] || [ ! -f "$icon_path" ]; then
+  icon_path=$(config_get "notifications.iconPath" "")
+fi
+if [ -z "$icon_path" ] || [ ! -f "$icon_path" ]; then
+  icon_path=""
+  for candidate in \
+    /Applications/Claude.app/Contents/Resources/icon.png \
+    /Applications/Claude.app/Contents/Resources/icon.icns \
+    /Applications/Claude.app/Contents/Resources/app.icns \
+    /Applications/Claude.app/Contents/Resources/electron.icns \
+    "$HOME/Applications/Claude.app/Contents/Resources/icon.png" \
+    "$HOME/Applications/Claude.app/Contents/Resources/icon.icns" \
+    "$HOME/Applications/Claude.app/Contents/Resources/app.icns" \
+    "$HOME/Applications/Claude.app/Contents/Resources/electron.icns"; do
+    if [ -f "$candidate" ]; then
+      icon_path="$candidate"
+      break
+    fi
+  done
+fi
+if [ -z "$icon_path" ]; then
+  for extension_root in "$HOME/.vscode/extensions" "$HOME/.vscode-insiders/extensions" "$HOME/.cursor/extensions"; do
+    [ -d "$extension_root" ] || continue
+    candidate=$(find "$extension_root" -maxdepth 3 -type f -path '*/anthropic.claude-code-*/resources/claude-logo.png' -print 2>/dev/null | sort | tail -n 1)
+    if [ -f "$candidate" ]; then
+      icon_path="$candidate"
+      break
+    fi
+  done
+fi
+
+notifications_enabled=$(config_get "notifications.enabled" "true")
+dialogs_enabled=$(config_get "notifications.dialogs" "true")
+sound_enabled=$(config_get "notifications.sound" "true")
+ignore_dnd_enabled=$(config_get "notifications.ignoreDnD" "true")
+dedupe_seconds=$(config_get "noise.dedupeSeconds" "20")
+ledger_enabled=$(config_get "ledger.enabled" "true")
+include_message_excerpt=$(config_get "ledger.includeMessageExcerpt" "false")
+max_message_chars=$(config_get "ledger.maxMessageChars" "260")
+debug_log_enabled=$(config_get "debug.logEnabled" "false")
+suppressed=false
+suppression_reason=
+
+if ! flag_enabled "$notifications_enabled"; then
+  suppressed=true
+  suppression_reason=notifications_disabled
+fi
+
+if [ "$suppressed" != true ]; then
+  apply_dedupe "$dedupe_seconds" "claude-code|${event_name:-unknown}|${notification_type:-unknown}|${session_id:-unknown}|${cwd:-unknown}"
+fi
+
+write_shared_ledger
+cleanup_storage_if_due
+
+if flag_enabled "$debug_log_enabled"; then
+  log_line "event=${event_name:-unknown} type=${notification_type:-unknown} category=${category:-unknown} suppressed=$suppressed cwd=${cwd:-unknown}"
+fi
+
+if [ "$suppressed" = true ]; then
+  exit 0
+fi
+
+if flag_enabled "${AI_SESSION_NOTIFIER_DRY_RUN:-false}"; then
+  exit 0
+fi
+
+case "$(uname -s 2>/dev/null || printf unknown)" in
+  Darwin)
+    notifier=$(find_terminal_notifier || true)
+    if [ -n "${notifier:-}" ]; then
+      set -- -title "$title" -message "$message"
+      if flag_enabled "$sound_enabled"; then
+        set -- "$@" -sound "$sound"
+      fi
+      if flag_enabled "$ignore_dnd_enabled"; then
+        set -- "$@" -ignoreDnD
+      fi
+      if [ -n "$icon_path" ]; then
+        set -- "$@" -appIcon "$icon_path"
+      fi
+      if [ -n "$target_url" ]; then
+        set -- "$@" -open "$target_url"
+      else
+        :
+      fi
+      "$notifier" "$@" >/dev/null 2>&1 || true
+    else
+      if flag_enabled "$sound_enabled"; then
+        osascript -e "display notification \"$message\" with title \"$title\" sound name \"$sound\"" >/dev/null 2>&1 || true
+      else
+        osascript -e "display notification \"$message\" with title \"$title\"" >/dev/null 2>&1 || true
+      fi
+    fi
+
+    if ! flag_enabled "$dialogs_enabled"; then
+      exit 0
+    fi
+
+    alert_timeout=8
+    if [ "$notification_type" = "permission_prompt" ]; then
+      alert_timeout=30
+    fi
+    osascript - "$title" "$message" "$alert_timeout" "$icon_path" "$target_url" <<'OSA' >/dev/null 2>&1 &
+on run argv
+  set notificationTitle to item 1 of argv
+  set notificationMessage to item 2 of argv
+  set timeoutSeconds to (item 3 of argv) as integer
+  set iconPath to item 4 of argv
+  set targetUrl to item 5 of argv
+
+  if targetUrl is not "" then
+    set openButton to "Open workspace"
+  else
+    set openButton to "OK"
+  end if
+
+  try
+    if iconPath is not "" then
+      set dialogResult to display dialog notificationMessage with title notificationTitle buttons {"Dismiss", openButton} default button openButton giving up after timeoutSeconds with icon POSIX file iconPath
+    else
+      set dialogResult to display dialog notificationMessage with title notificationTitle buttons {"Dismiss", openButton} default button openButton giving up after timeoutSeconds
+    end if
+
+    if targetUrl is not "" and gave up of dialogResult is false and button returned of dialogResult is openButton then
+      do shell script "open " & quoted form of targetUrl
+    end if
+  end try
+end run
+OSA
+    ;;
+  Linux)
+    if command -v notify-send >/dev/null 2>&1; then
+      notify-send "$title" "$message" >/dev/null 2>&1 || true
+    else
+      printf '%s: %s\n' "$title" "$message" >&2
+    fi
+    ;;
+  *)
+    printf '%s: %s\n' "$title" "$message" >&2
+    ;;
+esac

@@ -1,0 +1,154 @@
+#!/usr/bin/env python3
+"""Summarize AI Session Notifier JSONL events."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from collections import Counter
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+
+def default_events_file() -> Path:
+    data_dir = os.environ.get("AI_SESSION_NOTIFIER_DATA_DIR")
+    if not data_dir:
+        if os.name == "nt":
+            data_dir = str(
+                Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+                / "ai-session-notifier"
+            )
+        else:
+            data_dir = str(
+                Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
+                / "ai-session-notifier"
+            )
+    return Path(os.environ.get("AI_SESSION_NOTIFIER_EVENTS_FILE", str(Path(data_dir) / "events.jsonl")))
+
+
+def parse_time(value: str) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def load_events(path: Path) -> list[dict]:
+    if not path.exists():
+        return []
+    events: list[dict] = []
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(event, dict):
+                events.append(event)
+    return events
+
+
+def short_path(path: str) -> str:
+    if not path:
+        return "(unknown)"
+    home = str(Path.home())
+    if path == home:
+        return "~"
+    if path.startswith(home + os.sep):
+        return "~" + path[len(home) :]
+    return path
+
+
+def summarize(events: list[dict], hours: float) -> dict:
+    now = datetime.now(timezone.utc)
+    since = now - timedelta(hours=hours)
+    recent = []
+    for event in events:
+        timestamp = parse_time(str(event.get("timestamp", "")))
+        if timestamp is None:
+            continue
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
+        if timestamp >= since:
+            recent.append(event)
+
+    return {
+        "since": since.isoformat().replace("+00:00", "Z"),
+        "until": now.isoformat().replace("+00:00", "Z"),
+        "hours": hours,
+        "total": len(recent),
+        "suppressed": sum(1 for event in recent if event.get("suppressed") is True),
+        "byTool": Counter(str(event.get("tool") or "unknown") for event in recent),
+        "byCategory": Counter(str(event.get("category") or "unknown") for event in recent),
+        "byProject": Counter(short_path(str(event.get("cwd") or "")) for event in recent),
+        "latest": sorted(recent, key=lambda event: str(event.get("timestamp") or ""))[-10:],
+    }
+
+
+def print_counter(title: str, counter: Counter, limit: int) -> None:
+    print(title)
+    if not counter:
+        print("  none")
+        return
+    for name, count in counter.most_common(limit):
+        print(f"  {name}: {count}")
+
+
+def print_human(summary: dict, limit: int) -> None:
+    print(f"AI Session Report: last {summary['hours']:g}h")
+    print(f"Events: {summary['total']} total, {summary['suppressed']} suppressed by noise rules")
+    print()
+    print_counter("By tool:", summary["byTool"], limit)
+    print()
+    print_counter("By category:", summary["byCategory"], limit)
+    print()
+    print_counter("Top projects:", summary["byProject"], limit)
+    print()
+    print("Latest events:")
+    latest = summary["latest"][-limit:]
+    if not latest:
+        print("  none")
+        return
+    for event in latest:
+        timestamp = str(event.get("timestamp") or "")
+        tool = str(event.get("tool") or "unknown")
+        category = str(event.get("category") or "unknown")
+        project = short_path(str(event.get("cwd") or ""))
+        title = str(event.get("title") or "")
+        suppressed = " suppressed" if event.get("suppressed") is True else ""
+        print(f"  {timestamp} | {tool} | {category}{suppressed} | {project} | {title}")
+
+
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(description="Summarize AI Session Notifier events.")
+    parser.add_argument("--hours", type=float, default=24, help="Lookback window in hours.")
+    parser.add_argument("--limit", type=int, default=8, help="Maximum rows per section.")
+    parser.add_argument("--file", type=Path, default=default_events_file(), help="Events JSONL file.")
+    parser.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    args = parser.parse_args(argv)
+
+    events = load_events(args.file)
+    summary = summarize(events, args.hours)
+
+    if args.json:
+        payload = dict(summary)
+        payload["byTool"] = dict(payload["byTool"])
+        payload["byCategory"] = dict(payload["byCategory"])
+        payload["byProject"] = dict(payload["byProject"])
+        print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+    else:
+        print_human(summary, args.limit)
+        print()
+        print(f"Source: {args.file}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

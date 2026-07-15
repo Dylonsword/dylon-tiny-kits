@@ -1,0 +1,21 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "dylon-tiny-kits",
+  "description": "Personal toolbox plugins for AI-assisted local development workflows.",
+  "owner": {
+    "name": "Dylon Cai",
+    "email": "61169715+Dylonsword@users.noreply.github.com"
+  },
+  "plugins": [
+    {
+      "name": "ai-session-notifier",
+      "description": "Show privacy-first desktop notifications, bounded local ledgers, and workspace openers when Claude Code sessions need attention.",
+      "author": {
+        "name": "Dylon Cai",
+        "email": "61169715+Dylonsword@users.noreply.github.com"
+      },
+      "category": "productivity",
+      "source": "./tools/ai-session-notifier/claude-code-plugin"
+    }
+  ]
+}

@@ -1,0 +1,814 @@
+#!/usr/bin/env python3
+"""Manage AI Session Notifier configuration, diagnostics, and local data."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any
+
+
+VERSION = "0.4.1"
+CONFIG_VERSION = 2
+DEFAULT_CONFIG: dict[str, Any] = {
+    "version": CONFIG_VERSION,
+    "notifications": {
+        "enabled": True,
+        "dialogs": True,
+        "sound": True,
+        "ignoreDnD": True,
+        "iconPath": "",
+        "codexIconPath": "",
+        "claudeIconPath": "",
+    },
+    "noise": {
+        "dedupeSeconds": 20,
+        "observationMode": "notify",
+    },
+    "ledger": {
+        "enabled": True,
+        "includeMessageExcerpt": False,
+        "maxMessageChars": 260,
+        "retentionDays": 30,
+        "maxBytes": 5_242_880,
+    },
+    "routing": {
+        "openWorkspaceFirst": True,
+        "focusVSCodeWindow": True,
+    },
+    "debug": {
+        "saveRawPayload": False,
+        "logEnabled": False,
+    },
+}
+
+
+def config_dir() -> Path:
+    override = os.environ.get("AI_SESSION_NOTIFIER_CONFIG_DIR")
+    if override:
+        return Path(override).expanduser()
+    if os.name == "nt":
+        return Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming")) / "ai-session-notifier"
+    return Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "ai-session-notifier"
+
+
+def data_dir() -> Path:
+    override = os.environ.get("AI_SESSION_NOTIFIER_DATA_DIR")
+    if override:
+        return Path(override).expanduser()
+    if os.name == "nt":
+        return Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "ai-session-notifier"
+    return Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "ai-session-notifier"
+
+
+def paths() -> dict[str, Path]:
+    cfg_dir = config_dir()
+    app_data = data_dir()
+    return {
+        "config_dir": cfg_dir,
+        "config": Path(os.environ.get("AI_SESSION_NOTIFIER_CONFIG", cfg_dir / "config.json")),
+        "data_dir": app_data,
+        "events": Path(os.environ.get("AI_SESSION_NOTIFIER_EVENTS_FILE", app_data / "events.jsonl")),
+        "sessions": Path(os.environ.get("AI_SESSION_NOTIFIER_SESSIONS_FILE", app_data / "sessions.json")),
+        "legacy_sessions": app_data / "session-registry.jsonl",
+        "state": app_data / "state",
+        "debug_payload": app_data / "debug" / "last-payload.json",
+    }
+
+
+def deep_merge(defaults: dict[str, Any], current: dict[str, Any]) -> dict[str, Any]:
+    merged: dict[str, Any] = {}
+    for key, value in defaults.items():
+        existing = current.get(key)
+        if isinstance(value, dict):
+            merged[key] = deep_merge(value, existing if isinstance(existing, dict) else {})
+        else:
+            merged[key] = existing if key in current else value
+    for key, value in current.items():
+        if key not in merged:
+            merged[key] = value
+    return merged
+
+
+def read_json(path: Path, default: Any) -> Any:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return default
+
+
+def private_dir(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    if os.name != "nt":
+        path.chmod(0o700)
+
+
+def private_file(path: Path) -> None:
+    if os.name != "nt" and path.exists():
+        path.chmod(0o600)
+
+
+def atomic_write(path: Path, text: str) -> None:
+    private_dir(path.parent)
+    handle = tempfile.NamedTemporaryFile(
+        "w", encoding="utf-8", dir=path.parent, prefix=f".{path.name}.", delete=False
+    )
+    temp_path = Path(handle.name)
+    try:
+        with handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if os.name != "nt":
+            temp_path.chmod(0o600)
+        os.replace(temp_path, path)
+        private_file(path)
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
+def initialize() -> tuple[dict[str, Any], bool]:
+    locations = paths()
+    private_dir(locations["config_dir"])
+    private_dir(locations["data_dir"])
+    private_dir(locations["state"])
+    current = read_json(locations["config"], {})
+    if not isinstance(current, dict):
+        current = {}
+    merged = deep_merge(DEFAULT_CONFIG, current)
+    merged["version"] = CONFIG_VERSION
+    for key, default_value in DEFAULT_CONFIG.items():
+        if isinstance(default_value, dict) and isinstance(merged.get(key), dict):
+            merged[key].pop("version", None)
+    changed = merged != current
+    if changed or not locations["config"].exists():
+        atomic_write(locations["config"], json.dumps(merged, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
+    else:
+        private_file(locations["config"])
+    for key in ("events", "sessions", "legacy_sessions", "debug_payload"):
+        private_file(locations[key])
+    return merged, changed
+
+
+def parse_time(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def read_jsonl(path: Path) -> tuple[list[dict[str, Any]], int]:
+    records: list[dict[str, Any]] = []
+    invalid = 0
+    try:
+        handle = path.open("r", encoding="utf-8")
+    except OSError:
+        return records, invalid
+    with handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            try:
+                value = json.loads(line)
+            except json.JSONDecodeError:
+                invalid += 1
+                continue
+            if isinstance(value, dict):
+                records.append(value)
+            else:
+                invalid += 1
+    return records, invalid
+
+
+def event_key(event: dict[str, Any]) -> str:
+    tool = str(event.get("tool") or "unknown").strip().lower().replace(" ", "-")
+    session_id = str(event.get("threadId") or "").strip()
+    cwd = str(event.get("cwd") or "").strip()
+    identity = session_id or cwd or "unknown"
+    return f"{tool}:{identity}"
+
+
+def migrate_legacy_sessions(locations: dict[str, Path], dry_run: bool = False) -> int:
+    if locations["sessions"].exists() or not locations["legacy_sessions"].exists():
+        return 0
+    records, _ = read_jsonl(locations["legacy_sessions"])
+    sessions: dict[str, dict[str, Any]] = {}
+    for record in records:
+        sessions[event_key(record)] = record
+    if sessions and not dry_run:
+        payload = {
+            "version": 1,
+            "updatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "sessions": sessions,
+        }
+        atomic_write(locations["sessions"], json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
+        locations["legacy_sessions"].unlink(missing_ok=True)
+    return len(sessions)
+
+
+def redact_message_excerpts(
+    locations: dict[str, Path], config: dict[str, Any], dry_run: bool = False
+) -> dict[str, int]:
+    if bool(config_value(config, "ledger.includeMessageExcerpt", False)):
+        return {"events": 0, "sessions": 0}
+
+    event_lines: list[str] = []
+    redacted_events = 0
+    if locations["events"].exists():
+        try:
+            source_lines = locations["events"].read_text(encoding="utf-8").splitlines()
+        except OSError:
+            source_lines = []
+        for source_line in source_lines:
+            output_line = source_line
+            try:
+                event = json.loads(source_line)
+            except json.JSONDecodeError:
+                event = None
+            if isinstance(event, dict):
+                changed = False
+                for field in ("lastAssistantMessage", "last_assistant_message"):
+                    if event.get(field):
+                        event[field] = ""
+                        changed = True
+                if changed:
+                    redacted_events += 1
+                    output_line = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
+            event_lines.append(output_line + "\n")
+        if redacted_events and not dry_run:
+            atomic_write(locations["events"], "".join(event_lines))
+
+    session_payload = read_json(locations["sessions"], {})
+    sessions = session_payload.get("sessions", {}) if isinstance(session_payload, dict) else {}
+    redacted_sessions = 0
+    if isinstance(sessions, dict):
+        for session in sessions.values():
+            if not isinstance(session, dict):
+                continue
+            changed = False
+            for field in ("lastAssistantMessage", "last_assistant_message"):
+                if session.get(field):
+                    session[field] = ""
+                    changed = True
+            if changed:
+                redacted_sessions += 1
+        if redacted_sessions and not dry_run:
+            atomic_write(
+                locations["sessions"],
+                json.dumps(session_payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            )
+    return {"events": redacted_events, "sessions": redacted_sessions}
+
+
+def mode_text(path: Path) -> str:
+    try:
+        return stat.filemode(path.stat().st_mode)
+    except OSError:
+        return "missing"
+
+
+def find_claude_cli() -> str | None:
+    installed = shutil.which("claude")
+    if installed:
+        return installed
+    executable = "claude.exe" if os.name == "nt" else "claude"
+    candidates = list((Path.home() / ".nvm" / "versions" / "node").glob(f"*/bin/{executable}"))
+    candidates = [candidate for candidate in candidates if candidate.is_file()]
+    if not candidates:
+        return None
+    candidates.sort(key=lambda candidate: candidate.stat().st_mtime, reverse=True)
+    return str(candidates[0])
+
+
+def collect_claude_status(locations: dict[str, Path]) -> dict[str, Any]:
+    claude_home = Path(os.environ.get("CLAUDE_CONFIG_DIR", Path.home() / ".claude"))
+    installed_plugins = read_json(claude_home / "plugins" / "installed_plugins.json", {})
+    plugin_records: list[Any] = []
+    if isinstance(installed_plugins, dict):
+        plugins = installed_plugins.get("plugins")
+        if isinstance(plugins, dict):
+            value = plugins.get("ai-session-notifier@dylon-tiny-kits", [])
+            if isinstance(value, list):
+                plugin_records = value
+    latest = plugin_records[-1] if plugin_records and isinstance(plugin_records[-1], dict) else {}
+    adapter_name = "ai-session-notify.ps1" if os.name == "nt" else "ai-session-notify"
+    runtime_adapter = locations["data_dir"] / "bin" / adapter_name
+    return {
+        "pluginInstalled": bool(plugin_records),
+        "pluginVersion": latest.get("version") if isinstance(latest, dict) else None,
+        "pluginPath": latest.get("installPath") if isinstance(latest, dict) else None,
+        "runtimeAdapterInstalled": runtime_adapter.is_file(),
+        "runtimeAdapter": str(runtime_adapter),
+    }
+
+
+def config_value(config: dict[str, Any], dotted: str, default: Any) -> Any:
+    node: Any = config
+    for part in dotted.split("."):
+        if not isinstance(node, dict) or part not in node:
+            return default
+        node = node[part]
+    return node
+
+
+def first_existing_file(candidates: list[Path]) -> str | None:
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate)
+    return None
+
+
+def resolve_codex_icon(config: dict[str, Any]) -> str | None:
+    home = Path.home()
+    configured = [
+        Path(str(config_value(config, "notifications.codexIconPath", ""))).expanduser(),
+        Path(str(config_value(config, "notifications.iconPath", ""))).expanduser(),
+    ]
+    candidates = [candidate for candidate in configured if str(candidate) not in {"", "."}]
+    for app_root in (Path("/Applications"), home / "Applications"):
+        candidates.extend(
+            [
+                app_root / "ChatGPT.app" / "Contents" / "Resources" / "icon-codex-dark-color.png",
+                app_root / "ChatGPT.app" / "Contents" / "Resources" / "icon-codex-light.png",
+                app_root / "Codex.app" / "Contents" / "Resources" / "icon.png",
+                app_root / "Codex.app" / "Contents" / "Resources" / "icon.icns",
+                app_root / "Codex.app" / "Contents" / "Resources" / "app.icns",
+            ]
+        )
+    for extension_root in (
+        home / ".vscode" / "extensions",
+        home / ".vscode-insiders" / "extensions",
+        home / ".cursor" / "extensions",
+    ):
+        candidates.extend(
+            sorted(
+                extension_root.glob("openai.chatgpt-*/webview/assets/codex-app-ga-logo--*.png"),
+                reverse=True,
+            )
+        )
+    return first_existing_file(candidates)
+
+
+def resolve_claude_icon(config: dict[str, Any]) -> str | None:
+    home = Path.home()
+    configured = [
+        Path(str(config_value(config, "notifications.claudeIconPath", ""))).expanduser(),
+        Path(str(config_value(config, "notifications.iconPath", ""))).expanduser(),
+    ]
+    candidates = [candidate for candidate in configured if str(candidate) not in {"", "."}]
+    for app_root in (Path("/Applications"), home / "Applications"):
+        candidates.extend(
+            [
+                app_root / "Claude.app" / "Contents" / "Resources" / "icon.png",
+                app_root / "Claude.app" / "Contents" / "Resources" / "icon.icns",
+                app_root / "Claude.app" / "Contents" / "Resources" / "app.icns",
+                app_root / "Claude.app" / "Contents" / "Resources" / "electron.icns",
+            ]
+        )
+    for extension_root in (
+        home / ".vscode" / "extensions",
+        home / ".vscode-insiders" / "extensions",
+        home / ".cursor" / "extensions",
+    ):
+        candidates.extend(
+            sorted(
+                extension_root.glob("anthropic.claude-code-*/resources/claude-logo.png"),
+                reverse=True,
+            )
+        )
+    return first_existing_file(candidates)
+
+
+def collect_status() -> dict[str, Any]:
+    config, migrated = initialize()
+    locations = paths()
+    events, invalid_events = read_jsonl(locations["events"])
+    sessions = read_json(locations["sessions"], {})
+    session_count = len(sessions.get("sessions", {})) if isinstance(sessions, dict) else 0
+    codex_home = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
+    hooks_json = codex_home / "hooks.json"
+    hook_script = codex_home / "hooks" / "codex-notify.sh"
+    hook_config = read_json(hooks_json, {})
+    hook_events = sorted((hook_config.get("hooks") or {}).keys()) if isinstance(hook_config, dict) else []
+    claude_status = collect_claude_status(locations)
+    claude_cli = find_claude_cli()
+    icons = {"codex": resolve_codex_icon(config), "claude": resolve_claude_icon(config)}
+    return {
+        "version": VERSION,
+        "platform": sys.platform,
+        "configMigrated": migrated,
+        "paths": {key: str(value) for key, value in locations.items()},
+        "configVersion": config.get("version"),
+        "notificationsEnabled": bool(config_value(config, "notifications.enabled", True)),
+        "messageExcerptsEnabled": bool(config_value(config, "ledger.includeMessageExcerpt", False)),
+        "debugPayloadEnabled": bool(config_value(config, "debug.saveRawPayload", False)),
+        "events": len(events),
+        "invalidEventLines": invalid_events,
+        "eventBytes": locations["events"].stat().st_size if locations["events"].exists() else 0,
+        "sessions": session_count,
+        "codex": {
+            "hookScriptInstalled": hook_script.is_file(),
+            "hooksFileInstalled": hooks_json.is_file(),
+            "events": hook_events,
+        },
+        "claude": claude_status,
+        "icons": icons,
+        "dependencies": {
+            "terminalNotifier": shutil.which("terminal-notifier"),
+            "osascript": shutil.which("osascript"),
+            "notifySend": shutil.which("notify-send"),
+            "claude": claude_cli,
+            "perl": shutil.which("perl"),
+        },
+        "permissions": {
+            "configDir": mode_text(locations["config_dir"]),
+            "config": mode_text(locations["config"]),
+            "dataDir": mode_text(locations["data_dir"]),
+            "events": mode_text(locations["events"]),
+            "sessions": mode_text(locations["sessions"]),
+        },
+        "legacyRawPayloadExists": (codex_home / "hooks" / "last-payload.json").exists(),
+        "legacySessionLedgerExists": locations["legacy_sessions"].exists(),
+    }
+
+
+def print_status(status: dict[str, Any]) -> None:
+    codex = status["codex"]
+    claude = status["claude"]
+    print(f"AI Session Notifier {status['version']}")
+    print(f"Platform: {status['platform']}")
+    print(f"Config: {status['paths']['config']} (schema {status['configVersion']})")
+    print(f"Events: {status['events']} records, {status['eventBytes']} bytes")
+    print(f"Sessions: {status['sessions']} registered")
+    print(
+        "Privacy: message excerpts {0}, raw payload debug {1}".format(
+            "on" if status["messageExcerptsEnabled"] else "off",
+            "on" if status["debugPayloadEnabled"] else "off",
+        )
+    )
+    print(
+        "Codex: hook script {0}; events {1}".format(
+            "installed" if codex["hookScriptInstalled"] else "not installed",
+            ", ".join(codex["events"]) or "none",
+        )
+    )
+    print(
+        "Claude Code: plugin {0}; runtime adapter {1}".format(
+            f"installed ({claude['pluginVersion'] or 'unknown version'})"
+            if claude["pluginInstalled"]
+            else "not detected",
+            "installed" if claude["runtimeAdapterInstalled"] else "not installed",
+        )
+    )
+    print(f"Icons: Codex {status['icons']['codex'] or 'not found'}; Claude Code {status['icons']['claude'] or 'not found'}")
+
+
+def doctor_checks(status: dict[str, Any]) -> list[dict[str, str]]:
+    checks: list[dict[str, str]] = []
+
+    def add(level: str, name: str, detail: str) -> None:
+        checks.append({"level": level, "name": name, "detail": detail})
+
+    if status["configVersion"] == CONFIG_VERSION:
+        add("ok", "config", f"schema {CONFIG_VERSION} is valid")
+    else:
+        add("error", "config", f"expected schema {CONFIG_VERSION}, got {status['configVersion']}")
+    if status["dependencies"]["perl"]:
+        add("ok", "perl", status["dependencies"]["perl"])
+    elif os.name != "nt":
+        add("error", "perl", "required by the shell adapters")
+    if sys.platform == "darwin":
+        if status["dependencies"]["terminalNotifier"]:
+            add("ok", "macOS notifications", "terminal-notifier supports click-through")
+        elif status["dependencies"]["osascript"]:
+            add("warn", "macOS notifications", "AppleScript fallback works without banner click-through")
+        else:
+            add("error", "macOS notifications", "neither terminal-notifier nor osascript is available")
+        if status["icons"]["codex"]:
+            add("ok", "Codex icon", status["icons"]["codex"])
+        elif status["codex"]["hookScriptInstalled"]:
+            add("warn", "Codex icon", "no local Codex/ChatGPT app or OpenAI extension icon was found")
+        if status["icons"]["claude"]:
+            add("ok", "Claude Code icon", status["icons"]["claude"])
+        elif status["claude"]["pluginInstalled"] or status["claude"]["runtimeAdapterInstalled"]:
+            add("warn", "Claude Code icon", "no local Claude app or Anthropic extension icon was found")
+    elif sys.platform.startswith("linux"):
+        if status["dependencies"]["notifySend"]:
+            add("ok", "Linux notifications", status["dependencies"]["notifySend"])
+        else:
+            add("warn", "Linux notifications", "notify-send is missing; events fall back to stderr")
+    if status["codex"]["hookScriptInstalled"]:
+        required = {"Stop", "PermissionRequest"}
+        missing = required.difference(status["codex"]["events"])
+        if missing:
+            add("error", "Codex hooks", f"missing {', '.join(sorted(missing))}")
+        else:
+            add("ok", "Codex hooks", "Stop and PermissionRequest are installed")
+    else:
+        add("warn", "Codex hooks", "adapter is not installed")
+    if status["claude"]["pluginInstalled"]:
+        add("ok", "Claude Code plugin", f"version {status['claude']['pluginVersion'] or 'unknown'} is installed")
+    elif status["claude"]["runtimeAdapterInstalled"]:
+        add("ok", "Claude Code adapter", status["claude"]["runtimeAdapter"])
+    else:
+        add("warn", "Claude Code plugin", "adapter is not installed")
+    if status["dependencies"]["claude"]:
+        add("ok", "Claude Code CLI", status["dependencies"]["claude"])
+    if status["invalidEventLines"]:
+        add("warn", "event ledger", f"contains {status['invalidEventLines']} invalid JSONL line(s)")
+    else:
+        add("ok", "event ledger", f"{status['events']} valid record(s)")
+    if status["legacyRawPayloadExists"]:
+        add("warn", "legacy payload", "~/.codex/hooks/last-payload.json should be removed")
+    else:
+        add("ok", "raw payload privacy", "legacy raw payload file is absent")
+    if os.name != "nt":
+        unsafe = [
+            name
+            for name, mode in status["permissions"].items()
+            if mode != "missing" and (mode[-3:] not in {"---", "------"} or mode[-6:-3] != "---")
+        ]
+        if unsafe:
+            add("warn", "file permissions", f"review: {', '.join(unsafe)}")
+        else:
+            add("ok", "file permissions", "config and data are private")
+    return checks
+
+
+def print_doctor(checks: list[dict[str, str]]) -> None:
+    labels = {"ok": "OK", "warn": "WARN", "error": "ERROR"}
+    for check in checks:
+        print(f"[{labels[check['level']]:5}] {check['name']}: {check['detail']}")
+    errors = sum(1 for check in checks if check["level"] == "error")
+    warnings = sum(1 for check in checks if check["level"] == "warn")
+    print(f"\nResult: {errors} error(s), {warnings} warning(s)")
+
+
+def cleanup(dry_run: bool, retention_days: int | None, max_bytes: int | None) -> dict[str, Any]:
+    config, _ = initialize()
+    locations = paths()
+    days = retention_days if retention_days is not None else int(config_value(config, "ledger.retentionDays", 30))
+    byte_limit = max_bytes if max_bytes is not None else int(config_value(config, "ledger.maxBytes", 5_242_880))
+    cutoff = datetime.now(timezone.utc) - timedelta(days=max(0, days))
+    records, invalid = read_jsonl(locations["events"])
+    excerpts_redacted = 0
+    if not bool(config_value(config, "ledger.includeMessageExcerpt", False)):
+        for record in records:
+            for field in ("lastAssistantMessage", "last_assistant_message"):
+                if record.get(field):
+                    record[field] = ""
+                    excerpts_redacted += 1
+    kept = [record for record in records if (parse_time(record.get("timestamp")) or datetime.max.replace(tzinfo=timezone.utc)) >= cutoff]
+    expired = len(records) - len(kept)
+    encoded = [json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n" for record in kept]
+    trimmed = 0
+    if byte_limit > 0:
+        total = sum(len(line.encode("utf-8")) for line in encoded)
+        while encoded and total > byte_limit:
+            total -= len(encoded[0].encode("utf-8"))
+            encoded.pop(0)
+            trimmed += 1
+    if not dry_run and (locations["events"].exists() or encoded):
+        atomic_write(locations["events"], "".join(encoded))
+
+    session_payload = read_json(locations["sessions"], {})
+    sessions = session_payload.get("sessions", {}) if isinstance(session_payload, dict) else {}
+    if not isinstance(sessions, dict):
+        sessions = {}
+    session_excerpts_redacted = 0
+    if not bool(config_value(config, "ledger.includeMessageExcerpt", False)):
+        for session in sessions.values():
+            if not isinstance(session, dict):
+                continue
+            changed = False
+            for field in ("lastAssistantMessage", "last_assistant_message"):
+                if session.get(field):
+                    session[field] = ""
+                    changed = True
+            if changed:
+                session_excerpts_redacted += 1
+    kept_sessions = {
+        key: value
+        for key, value in sessions.items()
+        if isinstance(value, dict)
+        and (parse_time(value.get("timestamp")) or datetime.max.replace(tzinfo=timezone.utc)) >= cutoff
+    }
+    expired_sessions = len(sessions) - len(kept_sessions)
+    if not dry_run and (sessions != kept_sessions or session_excerpts_redacted):
+        atomic_write(
+            locations["sessions"],
+            json.dumps(
+                {
+                    "version": 1,
+                    "updatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                    "sessions": kept_sessions,
+                },
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+        )
+
+    state_removed = 0
+    if locations["state"].exists():
+        for state_file in locations["state"].iterdir():
+            try:
+                old = datetime.fromtimestamp(state_file.stat().st_mtime, timezone.utc) < cutoff
+            except OSError:
+                continue
+            if old:
+                state_removed += 1
+                if not dry_run:
+                    state_file.unlink(missing_ok=True)
+
+    debug_removed = False
+    if not bool(config_value(config, "debug.saveRawPayload", False)) and locations["debug_payload"].exists():
+        debug_removed = True
+        if not dry_run:
+            locations["debug_payload"].unlink(missing_ok=True)
+
+    return {
+        "dryRun": dry_run,
+        "retentionDays": days,
+        "maxBytes": byte_limit,
+        "eventsKept": len(encoded),
+        "eventsExpired": expired,
+        "eventsTrimmed": trimmed,
+        "invalidLinesRemoved": invalid,
+        "messageExcerptsRedacted": excerpts_redacted,
+        "sessionsKept": len(kept_sessions),
+        "sessionsExpired": expired_sessions,
+        "sessionExcerptsRedacted": session_excerpts_redacted,
+        "stateFilesRemoved": state_removed,
+        "debugPayloadRemoved": debug_removed,
+    }
+
+
+def run_test(tool: str, dry_run: bool) -> int:
+    tool_dir = Path(__file__).resolve().parent.parent
+    env = os.environ.copy()
+    if dry_run:
+        env["AI_SESSION_NOTIFIER_DRY_RUN"] = "1"
+    payloads = {
+        "codex": {
+            "hook_event_name": "PermissionRequest",
+            "threadId": "ai-session-notifier-test",
+            "source": "vscode",
+            "cwd": str(tool_dir),
+        },
+        "claude": {
+            "hook_event_name": "Notification",
+            "notification_type": "permission_prompt",
+            "session_id": "ai-session-notifier-test",
+            "cwd": str(tool_dir),
+        },
+    }
+    selected = ["codex", "claude"] if tool == "all" else [tool]
+    for name in selected:
+        if name == "codex":
+            if sys.platform != "darwin":
+                if tool == "codex":
+                    print("The Codex adapter test is currently supported on macOS only.", file=sys.stderr)
+                    return 2
+                print("Skipping Codex adapter test on this platform.")
+                continue
+            candidates = [
+                Path(os.environ["AI_SESSION_NOTIFIER_CODEX_ADAPTER"])
+                if os.environ.get("AI_SESSION_NOTIFIER_CODEX_ADAPTER")
+                else None,
+                Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")) / "hooks" / "codex-notify.sh",
+                tool_dir / "codex-plugin" / "scripts" / "codex-notify.sh",
+            ]
+            command = next((candidate for candidate in candidates if candidate and candidate.is_file()), None)
+            command_args = [str(command)] if command else []
+        else:
+            adapter_name = "ai-session-notify.ps1" if os.name == "nt" else "ai-session-notify"
+            candidates = [
+                Path(os.environ["AI_SESSION_NOTIFIER_CLAUDE_ADAPTER"])
+                if os.environ.get("AI_SESSION_NOTIFIER_CLAUDE_ADAPTER")
+                else None,
+                data_dir() / "bin" / adapter_name,
+                tool_dir / "claude-code-plugin" / "bin" / adapter_name,
+            ]
+            command = next((candidate for candidate in candidates if candidate and candidate.is_file()), None)
+            if os.name == "nt":
+                powershell = shutil.which("pwsh") or shutil.which("powershell")
+                command_args = (
+                    [powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(command)]
+                    if powershell and command
+                    else []
+                )
+            else:
+                command_args = [str(command)] if command else []
+        if not command_args:
+            print(f"{name} adapter is unavailable; reinstall that adapter first.", file=sys.stderr)
+            return 2
+        result = subprocess.run(
+            command_args,
+            input=json.dumps(payloads[name]),
+            text=True,
+            env=env,
+            check=False,
+        )
+        if result.returncode:
+            print(f"{name} test failed with exit code {result.returncode}", file=sys.stderr)
+            return result.returncode
+        print(f"{name} test event sent{' in dry-run mode' if dry_run else ''}.")
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Manage AI Session Notifier.")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    init_parser = subparsers.add_parser("init", help="Create or migrate the private local config.")
+    init_parser.add_argument("--json", action="store_true")
+
+    status_parser = subparsers.add_parser("status", help="Show installation and data status.")
+    status_parser.add_argument("--json", action="store_true")
+
+    doctor_parser = subparsers.add_parser("doctor", help="Run installation and privacy diagnostics.")
+    doctor_parser.add_argument("--json", action="store_true")
+
+    cleanup_parser = subparsers.add_parser("cleanup", help="Apply retention and size limits to local data.")
+    cleanup_parser.add_argument("--dry-run", action="store_true")
+    cleanup_parser.add_argument("--retention-days", type=int)
+    cleanup_parser.add_argument("--max-bytes", type=int)
+    cleanup_parser.add_argument("--json", action="store_true")
+
+    test_parser = subparsers.add_parser("test", help="Send fixture notifications through an adapter.")
+    test_parser.add_argument("--tool", choices=("all", "codex", "claude"), default="all")
+    test_parser.add_argument("--dry-run", action="store_true")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    if args.command == "init":
+        config, changed = initialize()
+        migrated_sessions = migrate_legacy_sessions(paths())
+        redacted = redact_message_excerpts(paths(), config)
+        payload = {
+            "changed": changed,
+            "configVersion": config["version"],
+            "migratedSessions": migrated_sessions,
+            "redactedEventExcerpts": redacted["events"],
+            "redactedSessionExcerpts": redacted["sessions"],
+        }
+        if args.json:
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        else:
+            print(f"Config schema {config['version']} ready at {paths()['config']}.")
+            if migrated_sessions:
+                print(f"Migrated {migrated_sessions} legacy session record(s).")
+            if redacted["events"] or redacted["sessions"]:
+                print(
+                    f"Redacted {redacted['events']} event and {redacted['sessions']} session message excerpt(s)."
+                )
+        return 0
+    if args.command == "status":
+        status = collect_status()
+        if args.json:
+            print(json.dumps(status, indent=2, sort_keys=True))
+        else:
+            print_status(status)
+        return 0
+    if args.command == "doctor":
+        status = collect_status()
+        checks = doctor_checks(status)
+        if args.json:
+            print(json.dumps({"checks": checks, "status": status}, indent=2, sort_keys=True))
+        else:
+            print_doctor(checks)
+        return 1 if any(check["level"] == "error" for check in checks) else 0
+    if args.command == "cleanup":
+        result = cleanup(args.dry_run, args.retention_days, args.max_bytes)
+        if args.json:
+            print(json.dumps(result, indent=2, sort_keys=True))
+        else:
+            mode = "Dry run" if result["dryRun"] else "Cleanup complete"
+            print(f"{mode}: {result['eventsKept']} event(s) kept, {result['eventsExpired']} expired, {result['eventsTrimmed']} size-trimmed.")
+            print(f"Sessions: {result['sessionsKept']} kept, {result['sessionsExpired']} expired.")
+        return 0
+    if args.command == "test":
+        return run_test(args.tool, args.dry_run)
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,24 @@
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.log
+*.tmp
+*.swp
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+dist/
+build/
+node_modules/
+.env
+.env.*
+!.env.example
+
+# Local runtime state and private hook payloads
+runtime/
+data/
+events.jsonl
+sessions.json
+*.sqlite
+*.sqlite3

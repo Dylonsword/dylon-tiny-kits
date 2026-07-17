@@ -47,7 +47,8 @@ jobs:
           $events = Get-Content (Join-Path $root "data\events.jsonl") | ForEach-Object { $_ | ConvertFrom-Json }
           if ($events.Count -ne 2) { throw "Expected two events" }
           if (($events | Where-Object { $_.lastAssistantMessage -ne "" }).Count -ne 0) { throw "Message excerpts must be disabled by default" }
-          if (($events | Where-Object { $_.title -notmatch "权限" }).Count -ne 0) { throw "Simplified Chinese notification titles expected" }
+          $renderedTitles = ($events | ForEach-Object { "{0}={1}" -f $_.tool, $_.title }) -join "; "
+          if (($events | Where-Object { $_.title -notmatch "权限" }).Count -ne 0) { throw "Simplified Chinese notification titles expected; got $renderedTitles" }
           $registry = Get-Content (Join-Path $root "data\sessions.json") -Raw | ConvertFrom-Json
           if ($null -eq $registry.sessions.'claude-code:windows-test') { throw "Session route missing" }
           if ($null -eq $registry.sessions.'kimi-code:kimi-windows-test') { throw "Kimi session route missing" }

@@ -11,7 +11,7 @@ its own, with clear compatibility notes and privacy-conscious defaults.
 
 | Project | Purpose | Support |
 | --- | --- | --- |
-| [AI Session Notifier](tools/ai-session-notifier/README.md) | Privacy-first desktop alerts, bounded local history, and best-effort return to the originating AI coding session. | Codex on macOS; Claude Code on macOS, Linux, and Windows |
+| [AI Session Notifier](tools/ai-session-notifier/README.md) | Privacy-first desktop alerts, bounded local history, and best-effort return to the originating AI coding session. | Codex on macOS; Claude Code and Kimi Code on macOS, Linux, and Windows |
 
 ## Skills
 

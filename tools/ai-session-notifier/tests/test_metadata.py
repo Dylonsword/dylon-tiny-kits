@@ -14,10 +14,12 @@ class MetadataTests(unittest.TestCase):
         tool = json.loads((TOOL_ROOT / "tool.json").read_text(encoding="utf-8"))
         codex = json.loads((TOOL_ROOT / "codex-plugin" / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
         claude = json.loads((TOOL_ROOT / "claude-code-plugin" / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
+        kimi = json.loads((TOOL_ROOT / "kimi-code-plugin" / "kimi.plugin.json").read_text(encoding="utf-8"))
 
-        self.assertEqual(tool["version"], "0.4.1")
-        self.assertEqual(codex["version"].split("+")[0], "0.4.1")
-        self.assertEqual(claude["version"], "0.4.1")
+        self.assertEqual(tool["version"], "0.5.0")
+        self.assertEqual(codex["version"].split("+")[0], "0.5.0")
+        self.assertEqual(claude["version"], "0.5.0")
+        self.assertEqual(kimi["version"], "0.5.0")
         self.assertEqual(tool["author"]["name"], "Dylon Cai")
 
     def test_codex_plugin_contains_current_management_commands(self) -> None:
@@ -30,6 +32,7 @@ class MetadataTests(unittest.TestCase):
         forbidden = [
             TOOL_ROOT / "codex-plugin" / "assets" / "codex-logo.png",
             TOOL_ROOT / "claude-code-plugin" / "assets" / "claude-code-logo.png",
+            TOOL_ROOT / "kimi-code-plugin" / "assets" / "kimi-logo.png",
         ]
         self.assertFalse(any(path.exists() for path in forbidden))
 
@@ -40,9 +43,25 @@ class MetadataTests(unittest.TestCase):
         claude_script = (TOOL_ROOT / "claude-code-plugin" / "bin" / "ai-session-notify").read_text(
             encoding="utf-8"
         )
+        kimi_script = (TOOL_ROOT / "kimi-code-plugin" / "hooks" / "ai-session-notify").read_text(
+            encoding="utf-8"
+        )
         self.assertIn("ChatGPT.app/Contents/Resources/icon-codex-dark-color.png", codex_script)
         self.assertIn("openai.chatgpt-*/webview/assets/codex-app-ga-logo", codex_script)
         self.assertIn("anthropic.claude-code-*/resources/claude-logo.png", claude_script)
+        self.assertIn("moonshot-ai.kimi-code-*/dist/kimi-logo.png", kimi_script)
+
+    def test_kimi_manifest_uses_supported_notification_events(self) -> None:
+        manifest = json.loads((TOOL_ROOT / "kimi-code-plugin" / "kimi.plugin.json").read_text(encoding="utf-8"))
+        hooks = manifest["hooks"]
+
+        self.assertEqual(
+            {item["event"] for item in hooks},
+            {"Stop", "PermissionRequest", "StopFailure", "Notification"},
+        )
+        notification = next(item for item in hooks if item["event"] == "Notification")
+        self.assertEqual(notification["matcher"], r"task\.completed")
+        self.assertTrue(all(item["command"] == "./hooks/ai-session-notify" for item in hooks))
 
     def test_json_metadata_is_valid(self) -> None:
         for path in REPO_ROOT.rglob("*.json"):

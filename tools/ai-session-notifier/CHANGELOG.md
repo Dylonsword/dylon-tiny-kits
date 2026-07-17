@@ -2,6 +2,23 @@
 
 All notable changes to AI Session Notifier are documented here.
 
+## [0.5.0] - 2026-07-16
+
+### Added
+
+- Added a native Kimi Code plugin for `Stop`, `PermissionRequest`,
+  `StopFailure`, and completed background-task notifications.
+- Added Kimi Code status, version compatibility checks, dry-run tests, local
+  icon discovery, bounded ledger entries, and runtime adapter diagnostics.
+- Added best-effort return to the originating terminal or VS Code window on
+  macOS and Windows.
+
+### Changed
+
+- Extended shared configuration with `notifications.kimiIconPath`.
+- Updated the unified installer and uninstaller with Kimi-specific setup and
+  removal guidance while preserving Kimi Code's interactive plugin trust flow.
+
 ## [0.4.1] - 2026-07-14
 
 ### Fixed

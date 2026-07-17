@@ -13,14 +13,15 @@ REPORT_CLI="$BIN_DIR/ai-session-report"
 
 usage() {
   cat <<'EOF'
-Usage: install.sh [--all] [--codex] [--claude] [--test] [--install-deps] [--dry-run]
+Usage: install.sh [--all] [--codex] [--claude] [--kimi] [--test] [--install-deps] [--dry-run]
 
 Installs AI Session Notifier adapters.
 
 Options:
-  --all      Install Codex and Claude Code adapters. This is the default.
+  --all      Prepare Codex, Claude Code, and Kimi Code adapters. This is the default.
   --codex    Install only the Codex hook adapter.
   --claude   Install or update only the Claude Code plugin adapter.
+  --kimi     Prepare the Kimi Code plugin and print its in-app trust commands.
   --test     Send test notifications after installing selected adapters.
   --install-deps  Install terminal-notifier with Homebrew when missing.
   --dry-run  Print planned changes without writing files or installing packages.
@@ -29,6 +30,7 @@ EOF
 
 install_codex=false
 install_claude=false
+install_kimi=false
 run_test=false
 install_deps=false
 dry_run=false
@@ -36,6 +38,7 @@ dry_run=false
 if [[ $# -eq 0 ]]; then
   install_codex=true
   install_claude=true
+  install_kimi=true
 fi
 
 while [[ $# -gt 0 ]]; do
@@ -43,12 +46,16 @@ while [[ $# -gt 0 ]]; do
     --all)
       install_codex=true
       install_claude=true
+      install_kimi=true
       ;;
     --codex)
       install_codex=true
       ;;
     --claude|--claude-code)
       install_claude=true
+      ;;
+    --kimi|--kimi-code)
+      install_kimi=true
       ;;
     --test)
       run_test=true
@@ -89,11 +96,24 @@ find_claude() {
   return 1
 }
 
+find_kimi() {
+  if command -v kimi >/dev/null 2>&1; then
+    command -v kimi
+    return 0
+  fi
+  if [[ -x "$HOME/.kimi-code/bin/kimi" ]]; then
+    printf '%s\n' "$HOME/.kimi-code/bin/kimi"
+    return 0
+  fi
+  return 1
+}
+
 install_manager() {
   if [[ "$dry_run" == true ]]; then
     echo "Would install management CLI: $MANAGE_CLI"
     echo "Would install report CLI: $REPORT_CLI"
     [[ "$install_claude" == true ]] && echo "Would install the Claude runtime adapter into: $APP_DATA_DIR/bin"
+    [[ "$install_kimi" == true ]] && echo "Would install the Kimi runtime adapter into: $APP_DATA_DIR/bin"
     return 0
   fi
   /bin/mkdir -p "$BIN_DIR" "$APP_DATA_DIR/bin"
@@ -110,12 +130,37 @@ install_manager() {
     /bin/chmod 700 "$APP_DATA_DIR/bin/ai-session-notify"
     /bin/chmod 600 "$APP_DATA_DIR/bin/ai-session-notify.ps1" "$APP_DATA_DIR/bin/ai-session-notify.cmd"
   fi
+  if [[ "$install_kimi" == true ]]; then
+    /bin/cp "$TOOL_DIR/kimi-code-plugin/hooks/ai-session-notify" "$APP_DATA_DIR/bin/kimi-session-notify"
+    /bin/cp "$TOOL_DIR/kimi-code-plugin/hooks/ai-session-notify.ps1" "$APP_DATA_DIR/bin/kimi-session-notify.ps1"
+    /bin/chmod 700 "$APP_DATA_DIR/bin/kimi-session-notify"
+    /bin/chmod 600 "$APP_DATA_DIR/bin/kimi-session-notify.ps1"
+  fi
   "$MANAGE_CLI" init >/dev/null
 }
 
-if [[ "$install_codex" != true && "$install_claude" != true ]]; then
+if [[ "$install_codex" != true && "$install_claude" != true && "$install_kimi" != true ]]; then
   install_codex=true
   install_claude=true
+  install_kimi=true
+fi
+
+if [[ "$install_kimi" == true ]]; then
+  if kimi_bin="$(find_kimi)"; then
+    kimi_version="$($kimi_bin --version 2>/dev/null || printf unknown)"
+    echo "Kimi Code detected: $kimi_version (plugin hooks require 0.20.1 or newer)"
+  else
+    echo "Kimi Code CLI not found; install version 0.20.1 or newer before enabling its plugin." >&2
+  fi
+  echo "Kimi Code requires interactive third-party plugin trust. Run inside Kimi Code:"
+  echo "/plugins install $TOOL_DIR/kimi-code-plugin"
+  echo "/plugins enable ai-session-notifier"
+  echo "/reload"
+  if [[ "$run_test" == true && "$dry_run" != true ]]; then
+    printf '%s\n' '{"hook_event_name":"PermissionRequest","tool_name":"Bash","session_id":"ai-session-notifier-test","cwd":"'"$TOOL_DIR"'"}' \
+      | "$TOOL_DIR/kimi-code-plugin/hooks/ai-session-notify"
+    echo "Sent Kimi Code adapter test notification. This verifies the adapter, not Kimi's plugin registry."
+  fi
 fi
 
 install_manager

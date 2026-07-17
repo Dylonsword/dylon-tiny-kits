@@ -6,6 +6,7 @@ repo_root=$(CDPATH= cd -- "$tool_root/../.." && pwd)
 cd "$repo_root"
 
 sh -n "$tool_root/claude-code-plugin/bin/ai-session-notify"
+sh -n "$tool_root/kimi-code-plugin/hooks/ai-session-notify"
 if command -v zsh >/dev/null 2>&1; then
   zsh -n "$tool_root/scripts/install.sh"
   zsh -n "$tool_root/scripts/uninstall.sh"

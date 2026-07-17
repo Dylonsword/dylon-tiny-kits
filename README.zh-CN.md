@@ -10,7 +10,7 @@ Dylon Cai 制作的一组小而实用的工具与可复用 Agent Skills。
 
 | 项目 | 用途 | 支持范围 |
 | --- | --- | --- |
-| [AI Session Notifier](tools/ai-session-notifier/README.zh-CN.md) | 为 AI 编码会话提供隐私优先的桌面提醒、有限容量的本地记录和尽力返回原会话。 | macOS 上的 Codex；macOS、Linux、Windows 上的 Claude Code |
+| [AI Session Notifier](tools/ai-session-notifier/README.zh-CN.md) | 为 AI 编码会话提供隐私优先的桌面提醒、有限容量的本地记录和尽力返回原会话。 | macOS 上的 Codex；macOS、Linux、Windows 上的 Claude Code 与 Kimi Code |
 
 ## Skills
 

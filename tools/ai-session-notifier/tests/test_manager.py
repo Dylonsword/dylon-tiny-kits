@@ -26,6 +26,7 @@ class ManagerTests(unittest.TestCase):
             {
                 "HOME": str(self.root / "home"),
                 "CODEX_HOME": str(self.root / "codex"),
+                "KIMI_CODE_HOME": str(self.root / "kimi"),
                 "AI_SESSION_NOTIFIER_CONFIG_DIR": str(self.root / "config"),
                 "AI_SESSION_NOTIFIER_DATA_DIR": str(self.root / "data"),
             }
@@ -164,18 +165,68 @@ class ManagerTests(unittest.TestCase):
         self.run_manager("init")
         codex_icon = self.root / "codex.png"
         claude_icon = self.root / "claude.png"
+        kimi_icon = self.root / "kimi.png"
         codex_icon.write_bytes(b"codex")
         claude_icon.write_bytes(b"claude")
+        kimi_icon.write_bytes(b"kimi")
         config_path = self.root / "config" / "config.json"
         config = json.loads(config_path.read_text(encoding="utf-8"))
         config["notifications"]["codexIconPath"] = str(codex_icon)
         config["notifications"]["claudeIconPath"] = str(claude_icon)
+        config["notifications"]["kimiIconPath"] = str(kimi_icon)
         config_path.write_text(json.dumps(config), encoding="utf-8")
 
         status = json.loads(self.run_manager("status", "--json").stdout)
 
         self.assertEqual(status["icons"]["codex"], str(codex_icon))
         self.assertEqual(status["icons"]["claude"], str(claude_icon))
+        self.assertEqual(status["icons"]["kimi"], str(kimi_icon))
+
+    @unittest.skipIf(os.name == "nt", "Source Kimi shell adapter is exercised on Unix")
+    def test_manager_can_test_kimi_adapter(self) -> None:
+        result = self.run_manager("test", "--tool", "kimi", "--dry-run")
+        events_path = self.root / "data" / "events.jsonl"
+        event = json.loads(events_path.read_text(encoding="utf-8"))
+
+        self.assertIn("kimi test event sent in dry-run mode", result.stdout.lower())
+        self.assertEqual(event["tool"], "Kimi Code")
+        self.assertEqual(event["category"], "permission")
+        self.assertEqual(event["lastAssistantMessage"], "")
+
+    def test_kimi_status_distinguishes_disabled_plugin_from_stale_managed_copy(self) -> None:
+        kimi_home = Path(self.env["KIMI_CODE_HOME"])
+        managed = kimi_home / "plugins" / "managed" / "ai-session-notifier"
+        managed.mkdir(parents=True)
+        (managed / "kimi.plugin.json").write_text(
+            json.dumps({"name": "ai-session-notifier", "version": "0.5.0"}),
+            encoding="utf-8",
+        )
+        registry = kimi_home / "plugins" / "installed.json"
+        registry.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "plugins": [
+                        {
+                            "id": "ai-session-notifier",
+                            "root": str(managed),
+                            "enabled": False,
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        disabled = json.loads(self.run_manager("doctor", "--json", check=False).stdout)
+        plugin_check = next(item for item in disabled["checks"] if item["name"] == "Kimi Code plugin")
+        self.assertEqual(plugin_check["level"], "error")
+        self.assertIn("disabled", plugin_check["detail"])
+
+        registry.write_text(json.dumps({"version": 1, "plugins": []}), encoding="utf-8")
+        stale = json.loads(self.run_manager("status", "--json").stdout)["kimi"]
+        self.assertFalse(stale["pluginInstalled"])
+        self.assertTrue(stale["managedCopyPresent"])
 
     def test_installed_manager_finds_runtime_claude_adapter(self) -> None:
         installed_manager = self.root / "bin" / "ai-session-notifier"

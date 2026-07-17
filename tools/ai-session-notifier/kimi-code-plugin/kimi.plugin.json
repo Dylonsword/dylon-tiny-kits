@@ -1,0 +1,46 @@
+{
+  "name": "ai-session-notifier",
+  "version": "0.5.0",
+  "description": "Show privacy-first desktop alerts when Kimi Code stops, fails, completes a background task, or needs permission.",
+  "keywords": [
+    "notifications",
+    "hooks",
+    "productivity"
+  ],
+  "author": {
+    "name": "Dylon Cai",
+    "email": "61169715+Dylonsword@users.noreply.github.com"
+  },
+  "homepage": "https://github.com/Dylonsword/dylon-tiny-kits",
+  "license": "MIT",
+  "interface": {
+    "displayName": "AI Session Notifier",
+    "shortDescription": "Private alerts and session return for Kimi Code.",
+    "longDescription": "Shows desktop notifications for turn stops, permission requests, failures, and completed background tasks while keeping a bounded, redacted event ledger on the local machine.",
+    "developerName": "Dylon Cai",
+    "websiteURL": "https://github.com/Dylonsword/dylon-tiny-kits"
+  },
+  "hooks": [
+    {
+      "event": "Stop",
+      "command": "./hooks/ai-session-notify",
+      "timeout": 15
+    },
+    {
+      "event": "PermissionRequest",
+      "command": "./hooks/ai-session-notify",
+      "timeout": 15
+    },
+    {
+      "event": "StopFailure",
+      "command": "./hooks/ai-session-notify",
+      "timeout": 15
+    },
+    {
+      "event": "Notification",
+      "matcher": "task\\.completed",
+      "command": "./hooks/ai-session-notify",
+      "timeout": 15
+    }
+  ]
+}

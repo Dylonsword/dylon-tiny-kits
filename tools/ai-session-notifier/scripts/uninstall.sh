@@ -10,7 +10,7 @@ BIN_DIR="${AI_SESSION_NOTIFIER_BIN_DIR:-$HOME/.local/bin}"
 
 usage() {
   cat <<'EOF'
-Usage: uninstall.sh [--all] [--codex] [--claude] [--purge] [--dry-run]
+Usage: uninstall.sh [--all] [--codex] [--claude] [--kimi] [--purge] [--dry-run]
 
 Uninstalls AI Session Notifier adapters. Management commands, shared config,
 and ledger files are left in place unless --purge is explicitly supplied.
@@ -27,12 +27,14 @@ assert_safe_purge_path() {
 
 remove_codex=false
 remove_claude=false
+remove_kimi=false
 purge=false
 dry_run=false
 
 if [[ $# -eq 0 ]]; then
   remove_codex=true
   remove_claude=true
+  remove_kimi=true
 fi
 
 while [[ $# -gt 0 ]]; do
@@ -40,12 +42,16 @@ while [[ $# -gt 0 ]]; do
     --all)
       remove_codex=true
       remove_claude=true
+      remove_kimi=true
       ;;
     --codex)
       remove_codex=true
       ;;
     --claude|--claude-code)
       remove_claude=true
+      ;;
+    --kimi|--kimi-code)
+      remove_kimi=true
       ;;
     --purge)
       purge=true
@@ -80,9 +86,22 @@ find_claude() {
   return 1
 }
 
-if [[ "$remove_codex" != true && "$remove_claude" != true ]]; then
+if [[ "$remove_codex" != true && "$remove_claude" != true && "$remove_kimi" != true ]]; then
   remove_codex=true
   remove_claude=true
+  remove_kimi=true
+fi
+
+if [[ "$remove_kimi" == true ]]; then
+  echo "Remove the trusted plugin through Kimi Code so its registry stays consistent:"
+  echo "/plugins disable ai-session-notifier"
+  echo "/plugins remove ai-session-notifier"
+  echo "/reload"
+  if [[ "$dry_run" == true ]]; then
+    echo "Would remove Kimi runtime adapters from: $APP_DATA_DIR/bin"
+  else
+    /bin/rm -f "$APP_DATA_DIR/bin/kimi-session-notify" "$APP_DATA_DIR/bin/kimi-session-notify.ps1"
+  fi
 fi
 
 if [[ "$remove_codex" == true ]]; then

@@ -209,7 +209,8 @@ ensure_app_state() {
     "ignoreDnD": true,
     "iconPath": "",
     "codexIconPath": "",
-    "claudeIconPath": ""
+    "claudeIconPath": "",
+    "kimiIconPath": ""
   },
   "noise": {
     "dedupeSeconds": 20,

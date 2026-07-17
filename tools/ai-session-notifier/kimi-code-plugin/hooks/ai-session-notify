@@ -4,6 +4,20 @@ umask 077
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 plugin_root=$(CDPATH= cd -- "$script_dir/.." && pwd)
+
+case "$(uname -s 2>/dev/null || printf unknown)" in
+  MINGW*|MSYS*|CYGWIN*)
+    powershell_bin=$(command -v powershell.exe 2>/dev/null || command -v pwsh.exe 2>/dev/null || true)
+    if [ -n "$powershell_bin" ]; then
+      powershell_script="$script_dir/ai-session-notify.ps1"
+      if command -v cygpath >/dev/null 2>&1; then
+        powershell_script=$(cygpath -w "$powershell_script")
+      fi
+      exec "$powershell_bin" -NoProfile -ExecutionPolicy Bypass -File "$powershell_script"
+    fi
+    ;;
+esac
+
 payload=$(cat 2>/dev/null || true)
 app_config_dir="${AI_SESSION_NOTIFIER_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/ai-session-notifier}"
 app_data_dir="${AI_SESSION_NOTIFIER_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/ai-session-notifier}"
@@ -31,7 +45,7 @@ urlencode() {
 }
 
 log_line() {
-  base="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+  base="${KIMI_CODE_HOME:-$HOME/.kimi-code}"
   dir="$base/hooks"
   mkdir -p "$dir" 2>/dev/null || return 0
   printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$dir/ai-session-notifier.log" 2>/dev/null || true
@@ -186,12 +200,12 @@ write_shared_ledger() {
   AS_EVENTS_FILE="$app_events_file" \
   AS_SESSIONS_FILE="$app_sessions_file" \
   AS_TIMESTAMP="$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
-  AS_TOOL="Claude Code" \
+  AS_TOOL="Kimi Code" \
   AS_EVENT="${event_name:-unknown}" \
   AS_NOTIFICATION_TYPE="${notification_type:-}" \
   AS_CATEGORY="$category" \
   AS_THREAD_ID="${session_id:-}" \
-  AS_SOURCE="claude-code" \
+  AS_SOURCE="kimi-code" \
   AS_CWD="${cwd:-}" \
   AS_TARGET_URL="${target_url:-}" \
   AS_TITLE="$title" \
@@ -360,60 +374,71 @@ session_id=$(json_get session_id sessionId conversation_id conversationId thread
 cwd=$(json_get cwd workspace_dir project_dir)
 cwd=${cwd:-${PWD:-}}
 last_message=$(json_get last_assistant_message lastAssistantMessage message)
+tool_name=$(json_get tool_name toolName)
 category=attention
 
-case "$notification_type" in
-  permission_prompt)
+case "$event_name" in
+  PermissionRequest)
     category=permission
-    title="Claude Code needs permission"
+    title="Kimi Code needs permission"
     message="Approve or reject the permission request to continue."
     sound="Hero"
     ;;
-  idle_prompt)
-    category=idle
-    title="Claude Code is waiting"
-    message="The current turn is idle and waiting for review."
+  Stop)
+    category=stop
+    title="Kimi Code turn stopped"
+    message="The current turn stopped and is ready for review."
+    sound="Glass"
+    ;;
+  StopFailure)
+    category=error
+    title="Kimi Code turn failed"
+    message="The current turn stopped because of an error and needs review."
+    sound="Hero"
+    ;;
+  Notification)
+    if [ "$notification_type" = "task.completed" ]; then
+      category=completion
+      title="Kimi Code background task finished"
+      message="A background task finished and is ready for review."
+    else
+      title="Kimi Code notification"
+      message="Kimi Code needs your attention."
+    fi
     sound="Glass"
     ;;
   *)
-    title="Claude Code notification"
-    message="Claude Code needs your attention."
+    title="Kimi Code notification"
+    message="Kimi Code needs your attention."
     sound="Glass"
     ;;
 esac
 
 target_url=""
-if [ -n "$cwd" ]; then
-  encoded_cwd=$(printf '%s' "$cwd" | urlencode)
-  encoded_prompt=$(printf '%s' "Return to this Claude Code workspace." | urlencode)
-  target_url="claude-cli://open?cwd=$encoded_cwd&q=$encoded_prompt"
+activate_bundle="${__CFBundleIdentifier:-}"
+if [ -z "$activate_bundle" ]; then
+  case "${TERM_PROGRAM:-}" in
+    vscode) activate_bundle="com.microsoft.VSCode" ;;
+    Apple_Terminal) activate_bundle="com.apple.Terminal" ;;
+    iTerm.app) activate_bundle="com.googlecode.iterm2" ;;
+    ghostty) activate_bundle="com.mitchellh.ghostty" ;;
+    WarpTerminal) activate_bundle="dev.warp.Warp-Stable" ;;
+    WezTerm) activate_bundle="com.github.wez.wezterm" ;;
+    kitty) activate_bundle="net.kovidgoyal.kitty" ;;
+  esac
 fi
 
-icon_path=$(config_get "notifications.claudeIconPath" "")
+icon_path=$(config_get "notifications.kimiIconPath" "")
 if [ -z "$icon_path" ] || [ ! -f "$icon_path" ]; then
   icon_path=$(config_get "notifications.iconPath" "")
-fi
-if [ -z "$icon_path" ] || [ ! -f "$icon_path" ]; then
-  icon_path=""
-  for candidate in \
-    /Applications/Claude.app/Contents/Resources/icon.png \
-    /Applications/Claude.app/Contents/Resources/icon.icns \
-    /Applications/Claude.app/Contents/Resources/app.icns \
-    /Applications/Claude.app/Contents/Resources/electron.icns \
-    "$HOME/Applications/Claude.app/Contents/Resources/icon.png" \
-    "$HOME/Applications/Claude.app/Contents/Resources/icon.icns" \
-    "$HOME/Applications/Claude.app/Contents/Resources/app.icns" \
-    "$HOME/Applications/Claude.app/Contents/Resources/electron.icns"; do
-    if [ -f "$candidate" ]; then
-      icon_path="$candidate"
-      break
-    fi
-  done
 fi
 if [ -z "$icon_path" ]; then
   for extension_root in "$HOME/.vscode/extensions" "$HOME/.vscode-insiders/extensions" "$HOME/.cursor/extensions"; do
     [ -d "$extension_root" ] || continue
-    candidate=$(find "$extension_root" -maxdepth 3 -type f -path '*/anthropic.claude-code-*/resources/claude-logo.png' -print 2>/dev/null | sort | tail -n 1)
+    candidate=$(find "$extension_root" -maxdepth 4 -type f \( \
+      -path '*/moonshot-ai.kimi-code-*/dist/kimi-logo.png' -o \
+      -path '*/moonshot-ai.kimi-code-*/resources/kimi-icon-storefront.png' \
+    \) -print 2>/dev/null | sort | tail -n 1)
     if [ -f "$candidate" ]; then
       icon_path="$candidate"
       break
@@ -439,14 +464,14 @@ if ! flag_enabled "$notifications_enabled"; then
 fi
 
 if [ "$suppressed" != true ]; then
-  apply_dedupe "$dedupe_seconds" "claude-code|${event_name:-unknown}|${notification_type:-unknown}|${session_id:-unknown}|${cwd:-unknown}"
+  apply_dedupe "$dedupe_seconds" "kimi-code|${event_name:-unknown}|${notification_type:-unknown}|${session_id:-unknown}|${cwd:-unknown}"
 fi
 
 write_shared_ledger
 cleanup_storage_if_due
 
 if flag_enabled "$debug_log_enabled"; then
-  log_line "event=${event_name:-unknown} type=${notification_type:-unknown} category=${category:-unknown} suppressed=$suppressed cwd=${cwd:-unknown}"
+  log_line "event=${event_name:-unknown} type=${notification_type:-unknown} tool=${tool_name:-unknown} category=${category:-unknown} suppressed=$suppressed cwd=${cwd:-unknown}"
 fi
 
 if [ "$suppressed" = true ]; then
@@ -471,10 +496,8 @@ case "$(uname -s 2>/dev/null || printf unknown)" in
       if [ -n "$icon_path" ]; then
         set -- "$@" -appIcon "$icon_path"
       fi
-      if [ -n "$target_url" ]; then
-        set -- "$@" -open "$target_url"
-      else
-        :
+      if [ -n "$activate_bundle" ]; then
+        set -- "$@" -activate "$activate_bundle"
       fi
       "$notifier" "$@" >/dev/null 2>&1 || true
     else
@@ -490,19 +513,22 @@ case "$(uname -s 2>/dev/null || printf unknown)" in
     fi
 
     alert_timeout=8
-    if [ "$notification_type" = "permission_prompt" ]; then
+    if [ "$event_name" = "PermissionRequest" ]; then
       alert_timeout=30
+    elif [ "$event_name" = "StopFailure" ]; then
+      alert_timeout=12
     fi
-    osascript - "$title" "$message" "$alert_timeout" "$icon_path" "$target_url" <<'OSA' >/dev/null 2>&1 &
+    osascript - "$title" "$message" "$alert_timeout" "$icon_path" "$activate_bundle" "$cwd" <<'OSA' >/dev/null 2>&1 &
 on run argv
   set notificationTitle to item 1 of argv
   set notificationMessage to item 2 of argv
   set timeoutSeconds to (item 3 of argv) as integer
   set iconPath to item 4 of argv
-  set targetUrl to item 5 of argv
+  set bundleId to item 5 of argv
+  set cwdPath to item 6 of argv
 
-  if targetUrl is not "" then
-    set openButton to "Open workspace"
+  if bundleId is not "" then
+    set openButton to "Open session"
   else
     set openButton to "OK"
   end if
@@ -514,11 +540,45 @@ on run argv
       set dialogResult to display dialog notificationMessage with title notificationTitle buttons {"Dismiss", openButton} default button openButton giving up after timeoutSeconds
     end if
 
-    if targetUrl is not "" and gave up of dialogResult is false and button returned of dialogResult is openButton then
-      do shell script "open " & quoted form of targetUrl
+    if bundleId is not "" and gave up of dialogResult is false and button returned of dialogResult is openButton then
+      my focusTarget(bundleId, cwdPath)
     end if
   end try
 end run
+
+on focusTarget(bundleId, cwdPath)
+  try
+    tell application id bundleId to activate
+  end try
+
+  if cwdPath is "" then return
+
+  set workspaceName to ""
+  try
+    set workspaceName to do shell script "/usr/bin/basename " & quoted form of cwdPath
+  end try
+
+  try
+    tell application "System Events"
+      set targetProcesses to application processes whose bundle identifier is bundleId
+      if (count of targetProcesses) is 0 then return
+      set targetProcess to item 1 of targetProcesses
+      set frontmost of targetProcess to true
+      repeat with appWindow in windows of targetProcess
+        set windowTitle to ""
+        try
+          set windowTitle to name of appWindow
+        end try
+        if (workspaceName is not "" and windowTitle contains workspaceName) or windowTitle contains cwdPath then
+          try
+            perform action "AXRaise" of appWindow
+          end try
+          return
+        end if
+      end repeat
+    end tell
+  end try
+end focusTarget
 OSA
     ;;
   Linux)

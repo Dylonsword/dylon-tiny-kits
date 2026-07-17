@@ -1,8 +1,8 @@
 {
   "name": "ai-session-notifier",
   "displayName": "AI Session Notifier",
-  "version": "0.4.1",
-  "description": "Privacy-first desktop notifications, best-effort session routing, and bounded local ledgers for Codex and Claude Code.",
+  "version": "0.5.0",
+  "description": "Privacy-first desktop notifications, best-effort session routing, and bounded local ledgers for Codex, Claude Code, and Kimi Code.",
   "author": {
     "name": "Dylon Cai",
     "email": "61169715+Dylonsword@users.noreply.github.com"
@@ -18,12 +18,17 @@
       "name": "Claude Code",
       "path": "claude-code-plugin",
       "support": "macOS tested; Linux and Windows adapters included and covered by automated checks; field testing is still welcome"
+    },
+    {
+      "name": "Kimi Code",
+      "path": "kimi-code-plugin",
+      "support": "Kimi Code CLI 0.20.1 or newer; native plugin tested on macOS with CLI 0.26.0; Linux and Windows adapters included with automated coverage"
     }
   ],
   "platforms": {
-    "macos": "Codex and Claude Code notification backends are tested. VS Code window-focus enhancement uses macOS System Events.",
-    "linux": "Claude Code notify-send backend and local ledger are included; desktop field testing is still needed.",
-    "windows": "Claude Code PowerShell dialog, bounded local ledger, and best-effort VS Code window focus are included; desktop field testing is still needed. The Codex adapter remains macOS-only."
+    "macos": "Codex, Claude Code, and the Kimi Code native plugin are tested. Kimi activation requires CLI 0.20.1 or newer. Window-focus enhancement uses macOS System Events.",
+    "linux": "Claude Code and Kimi Code notify-send backends and local ledgers are included; desktop field testing is still needed.",
+    "windows": "Claude Code and Kimi Code PowerShell dialogs, bounded local ledgers, and best-effort window focus are included; desktop field testing is still needed. The Codex adapter remains macOS-only."
   },
   "entrypoints": {
     "install": "scripts/install.sh",
@@ -32,6 +37,7 @@
     "report": "scripts/ai-session-report",
     "codexInstall": "codex-plugin/scripts/install.sh",
     "codexUninstall": "codex-plugin/scripts/uninstall.sh",
-    "claudePlugin": "claude-code-plugin"
+    "claudePlugin": "claude-code-plugin",
+    "kimiPlugin": "kimi-code-plugin"
   }
 }

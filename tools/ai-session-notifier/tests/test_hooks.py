@@ -14,6 +14,7 @@ TOOL_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = TOOL_ROOT.parents[1]
 CODEX_HOOK = TOOL_ROOT / "codex-plugin" / "scripts" / "codex-notify.sh"
 CLAUDE_HOOK = TOOL_ROOT / "claude-code-plugin" / "bin" / "ai-session-notify"
+KIMI_HOOK = TOOL_ROOT / "kimi-code-plugin" / "hooks" / "ai-session-notify"
 INSTALLER = TOOL_ROOT / "scripts" / "install.sh"
 UNINSTALLER = TOOL_ROOT / "scripts" / "uninstall.sh"
 
@@ -28,6 +29,7 @@ class HookTests(unittest.TestCase):
             {
                 "HOME": str(self.root / "home"),
                 "CODEX_HOME": str(self.root / "codex"),
+                "KIMI_CODE_HOME": str(self.root / "kimi"),
                 "AI_SESSION_NOTIFIER_CONFIG_DIR": str(self.root / "config"),
                 "AI_SESSION_NOTIFIER_DATA_DIR": str(self.root / "data"),
                 "AI_SESSION_NOTIFIER_DRY_RUN": "1",
@@ -73,6 +75,15 @@ class HookTests(unittest.TestCase):
                 "last_assistant_message": "private claude text",
             },
         )
+        self.invoke(
+            KIMI_HOOK,
+            {
+                "hook_event_name": "PermissionRequest",
+                "session_id": "kimi-session",
+                "cwd": "/tmp/kimi-project",
+                "message": "private kimi text",
+            },
+        )
 
         events = self.events()
         self.assertTrue(events)
@@ -80,12 +91,40 @@ class HookTests(unittest.TestCase):
         self.assertTrue(all(event["schemaVersion"] == 1 for event in events))
         registry = json.loads((self.root / "data" / "sessions.json").read_text(encoding="utf-8"))
         self.assertIn("claude-code:claude-session", registry["sessions"])
+        self.assertIn("kimi-code:kimi-session", registry["sessions"])
         if shutil.which("zsh"):
             self.assertIn("codex:codex-session", registry["sessions"])
         self.assertFalse((self.root / "codex" / "hooks" / "last-payload.json").exists())
         self.assertFalse((self.root / "data" / "debug" / "last-payload.json").exists())
         if os.name != "nt":
             self.assertEqual((self.root / "data" / "events.jsonl").stat().st_mode & 0o777, 0o600)
+
+    def test_kimi_events_keep_stop_turn_scoped_and_classify_failures(self) -> None:
+        cases = [
+            ({"hook_event_name": "Stop", "session_id": "kimi-stop", "cwd": "/tmp/kimi"}, "stop"),
+            (
+                {"hook_event_name": "StopFailure", "session_id": "kimi-failure", "cwd": "/tmp/kimi"},
+                "error",
+            ),
+            (
+                {
+                    "hook_event_name": "Notification",
+                    "notification_type": "task.completed",
+                    "session_id": "kimi-background",
+                    "cwd": "/tmp/kimi",
+                },
+                "completion",
+            ),
+        ]
+        for payload, _category in cases:
+            self.invoke(KIMI_HOOK, payload)
+
+        events = self.events()
+        self.assertEqual([event["category"] for event in events], [item[1] for item in cases])
+        stop_event = events[0]
+        self.assertIn("turn stopped", str(stop_event["title"]).lower())
+        self.assertNotIn("task completed", str(stop_event["title"]).lower())
+        self.assertNotIn("task finished", str(stop_event["message"]).lower())
 
     def test_concurrent_claude_events_remain_valid_jsonl(self) -> None:
         def send(index: int) -> None:

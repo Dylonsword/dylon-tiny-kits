@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -16,8 +17,9 @@ from pathlib import Path
 from typing import Any
 
 
-VERSION = "0.4.1"
+VERSION = "0.5.0"
 CONFIG_VERSION = 2
+MIN_KIMI_PLUGIN_HOOKS_VERSION = "0.20.1"
 DEFAULT_CONFIG: dict[str, Any] = {
     "version": CONFIG_VERSION,
     "notifications": {
@@ -28,6 +30,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "iconPath": "",
         "codexIconPath": "",
         "claudeIconPath": "",
+        "kimiIconPath": "",
     },
     "noise": {
         "dedupeSeconds": 20,
@@ -293,6 +296,68 @@ def find_claude_cli() -> str | None:
     return str(candidates[0])
 
 
+def find_kimi_cli() -> str | None:
+    installed = shutil.which("kimi")
+    if installed:
+        return installed
+    executable = "kimi.exe" if os.name == "nt" else "kimi"
+    for candidate in (
+        Path.home() / ".kimi-code" / "bin" / executable,
+        Path.home() / ".local" / "bin" / executable,
+    ):
+        if candidate.is_file():
+            return str(candidate)
+    return None
+
+
+def executable_version(command: str | None) -> str | None:
+    if not command:
+        return None
+    try:
+        result = subprocess.run(
+            [command, "--version"],
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    match = re.search(r"\d+(?:\.\d+){1,3}", result.stdout or result.stderr)
+    return match.group(0) if match else None
+
+
+def version_at_least(value: str | None, minimum: str) -> bool:
+    if not value:
+        return False
+
+    def parts(text: str) -> tuple[int, ...]:
+        match = re.search(r"\d+(?:\.\d+)+", text)
+        return tuple(int(part) for part in match.group(0).split(".")) if match else ()
+
+    current = parts(value)
+    required = parts(minimum)
+    width = max(len(current), len(required))
+    return current + (0,) * (width - len(current)) >= required + (0,) * (width - len(required))
+
+
+def find_plugin_record(node: Any, plugin_id: str) -> dict[str, Any] | None:
+    if isinstance(node, dict):
+        identity = node.get("id") or node.get("name") or node.get("pluginId")
+        if identity == plugin_id:
+            return node
+        for value in node.values():
+            found = find_plugin_record(value, plugin_id)
+            if found:
+                return found
+    elif isinstance(node, list):
+        for value in node:
+            found = find_plugin_record(value, plugin_id)
+            if found:
+                return found
+    return None
+
+
 def collect_claude_status(locations: dict[str, Path]) -> dict[str, Any]:
     claude_home = Path(os.environ.get("CLAUDE_CONFIG_DIR", Path.home() / ".claude"))
     installed_plugins = read_json(claude_home / "plugins" / "installed_plugins.json", {})
@@ -312,6 +377,38 @@ def collect_claude_status(locations: dict[str, Path]) -> dict[str, Any]:
         "pluginPath": latest.get("installPath") if isinstance(latest, dict) else None,
         "runtimeAdapterInstalled": runtime_adapter.is_file(),
         "runtimeAdapter": str(runtime_adapter),
+    }
+
+
+def collect_kimi_status(locations: dict[str, Path]) -> dict[str, Any]:
+    kimi_home = Path(os.environ.get("KIMI_CODE_HOME", Path.home() / ".kimi-code"))
+    registry_path = kimi_home / "plugins" / "installed.json"
+    registry = read_json(registry_path, {})
+    record = find_plugin_record(registry, "ai-session-notifier")
+    managed_root = kimi_home / "plugins" / "managed" / "ai-session-notifier"
+    manifest = managed_root / "kimi.plugin.json"
+    if not manifest.is_file() and managed_root.is_dir():
+        manifest = next(iter(managed_root.rglob("kimi.plugin.json")), manifest)
+    metadata = read_json(manifest, {}) if manifest.is_file() else {}
+    kimi_cli = find_kimi_cli()
+    kimi_version = executable_version(kimi_cli)
+    runtime_name = "kimi-session-notify.ps1" if os.name == "nt" else "kimi-session-notify"
+    runtime_adapter = locations["data_dir"] / "bin" / runtime_name
+    return {
+        "pluginInstalled": bool(record),
+        "pluginEnabled": record.get("enabled") if isinstance(record, dict) else None,
+        "managedCopyPresent": manifest.is_file(),
+        "pluginVersion": metadata.get("version") or (record.get("version") if isinstance(record, dict) else None),
+        "pluginPath": str(manifest.parent)
+        if manifest.is_file()
+        else ((record.get("root") or record.get("path")) if isinstance(record, dict) else None),
+        "registry": str(registry_path),
+        "runtimeAdapterInstalled": runtime_adapter.is_file(),
+        "runtimeAdapter": str(runtime_adapter),
+        "cli": kimi_cli,
+        "cliVersion": kimi_version,
+        "minimumPluginHooksVersion": MIN_KIMI_PLUGIN_HOOKS_VERSION,
+        "pluginHooksSupported": version_at_least(kimi_version, MIN_KIMI_PLUGIN_HOOKS_VERSION),
     }
 
 
@@ -392,6 +489,28 @@ def resolve_claude_icon(config: dict[str, Any]) -> str | None:
     return first_existing_file(candidates)
 
 
+def resolve_kimi_icon(config: dict[str, Any]) -> str | None:
+    home = Path.home()
+    configured = [
+        Path(str(config_value(config, "notifications.kimiIconPath", ""))).expanduser(),
+        Path(str(config_value(config, "notifications.iconPath", ""))).expanduser(),
+    ]
+    candidates = [candidate for candidate in configured if str(candidate) not in {"", "."}]
+    for extension_root in (
+        home / ".vscode" / "extensions",
+        home / ".vscode-insiders" / "extensions",
+        home / ".cursor" / "extensions",
+    ):
+        candidates.extend(sorted(extension_root.glob("moonshot-ai.kimi-code-*/dist/kimi-logo.png"), reverse=True))
+        candidates.extend(
+            sorted(
+                extension_root.glob("moonshot-ai.kimi-code-*/resources/kimi-icon-storefront.png"),
+                reverse=True,
+            )
+        )
+    return first_existing_file(candidates)
+
+
 def collect_status() -> dict[str, Any]:
     config, migrated = initialize()
     locations = paths()
@@ -405,7 +524,12 @@ def collect_status() -> dict[str, Any]:
     hook_events = sorted((hook_config.get("hooks") or {}).keys()) if isinstance(hook_config, dict) else []
     claude_status = collect_claude_status(locations)
     claude_cli = find_claude_cli()
-    icons = {"codex": resolve_codex_icon(config), "claude": resolve_claude_icon(config)}
+    kimi_status = collect_kimi_status(locations)
+    icons = {
+        "codex": resolve_codex_icon(config),
+        "claude": resolve_claude_icon(config),
+        "kimi": resolve_kimi_icon(config),
+    }
     return {
         "version": VERSION,
         "platform": sys.platform,
@@ -425,12 +549,14 @@ def collect_status() -> dict[str, Any]:
             "events": hook_events,
         },
         "claude": claude_status,
+        "kimi": kimi_status,
         "icons": icons,
         "dependencies": {
             "terminalNotifier": shutil.which("terminal-notifier"),
             "osascript": shutil.which("osascript"),
             "notifySend": shutil.which("notify-send"),
             "claude": claude_cli,
+            "kimi": kimi_status["cli"],
             "perl": shutil.which("perl"),
         },
         "permissions": {
@@ -448,6 +574,7 @@ def collect_status() -> dict[str, Any]:
 def print_status(status: dict[str, Any]) -> None:
     codex = status["codex"]
     claude = status["claude"]
+    kimi = status["kimi"]
     print(f"AI Session Notifier {status['version']}")
     print(f"Platform: {status['platform']}")
     print(f"Config: {status['paths']['config']} (schema {status['configVersion']})")
@@ -473,7 +600,20 @@ def print_status(status: dict[str, Any]) -> None:
             "installed" if claude["runtimeAdapterInstalled"] else "not installed",
         )
     )
-    print(f"Icons: Codex {status['icons']['codex'] or 'not found'}; Claude Code {status['icons']['claude'] or 'not found'}")
+    print(
+        "Kimi Code: CLI {0}; plugin {1}; runtime adapter {2}".format(
+            kimi["cliVersion"] or "not found",
+            f"installed ({kimi['pluginVersion'] or 'unknown version'})" if kimi["pluginInstalled"] else "not detected",
+            "installed" if kimi["runtimeAdapterInstalled"] else "not installed",
+        )
+    )
+    print(
+        "Icons: Codex {0}; Claude Code {1}; Kimi Code {2}".format(
+            status["icons"]["codex"] or "not found",
+            status["icons"]["claude"] or "not found",
+            status["icons"]["kimi"] or "not found",
+        )
+    )
 
 
 def doctor_checks(status: dict[str, Any]) -> list[dict[str, str]]:
@@ -505,6 +645,10 @@ def doctor_checks(status: dict[str, Any]) -> list[dict[str, str]]:
             add("ok", "Claude Code icon", status["icons"]["claude"])
         elif status["claude"]["pluginInstalled"] or status["claude"]["runtimeAdapterInstalled"]:
             add("warn", "Claude Code icon", "no local Claude app or Anthropic extension icon was found")
+        if status["icons"]["kimi"]:
+            add("ok", "Kimi Code icon", status["icons"]["kimi"])
+        elif status["kimi"]["pluginInstalled"] or status["kimi"]["runtimeAdapterInstalled"]:
+            add("warn", "Kimi Code icon", "no local official Kimi Code extension icon was found")
     elif sys.platform.startswith("linux"):
         if status["dependencies"]["notifySend"]:
             add("ok", "Linux notifications", status["dependencies"]["notifySend"])
@@ -527,6 +671,32 @@ def doctor_checks(status: dict[str, Any]) -> list[dict[str, str]]:
         add("warn", "Claude Code plugin", "adapter is not installed")
     if status["dependencies"]["claude"]:
         add("ok", "Claude Code CLI", status["dependencies"]["claude"])
+    kimi = status["kimi"]
+    if kimi["cli"]:
+        if kimi["pluginHooksSupported"]:
+            add("ok", "Kimi Code CLI", f"version {kimi['cliVersion']} supports plugin hooks")
+        else:
+            level = "error" if kimi["pluginInstalled"] else "warn"
+            add(
+                level,
+                "Kimi Code CLI",
+                f"version {kimi['cliVersion'] or 'unknown'}; plugin hooks require {kimi['minimumPluginHooksVersion']} or newer",
+            )
+    elif kimi["pluginInstalled"] or kimi["runtimeAdapterInstalled"]:
+        add("error", "Kimi Code CLI", "kimi executable was not found")
+    if kimi["pluginInstalled"]:
+        if kimi["pluginEnabled"] is True:
+            add("ok", "Kimi Code plugin", f"version {kimi['pluginVersion'] or 'unknown'} is installed and enabled")
+        elif kimi["pluginEnabled"] is False:
+            add("error", "Kimi Code plugin", "plugin is installed but disabled; enable it and run /reload")
+        else:
+            add("warn", "Kimi Code plugin", "plugin is installed but its enabled state is unknown")
+    elif kimi["managedCopyPresent"]:
+        add("warn", "Kimi Code plugin", "a managed copy remains, but the plugin is not registered")
+    elif kimi["runtimeAdapterInstalled"]:
+        add("warn", "Kimi Code plugin", "runtime adapter is ready; install and enable the native plugin in Kimi Code")
+    else:
+        add("warn", "Kimi Code plugin", "adapter is not installed")
     if status["invalidEventLines"]:
         add("warn", "event ledger", f"contains {status['invalidEventLines']} invalid JSONL line(s)")
     else:
@@ -676,8 +846,14 @@ def run_test(tool: str, dry_run: bool) -> int:
             "session_id": "ai-session-notifier-test",
             "cwd": str(tool_dir),
         },
+        "kimi": {
+            "hook_event_name": "PermissionRequest",
+            "tool_name": "Bash",
+            "session_id": "ai-session-notifier-test",
+            "cwd": str(tool_dir),
+        },
     }
-    selected = ["codex", "claude"] if tool == "all" else [tool]
+    selected = ["codex", "claude", "kimi"] if tool == "all" else [tool]
     for name in selected:
         if name == "codex":
             if sys.platform != "darwin":
@@ -695,7 +871,7 @@ def run_test(tool: str, dry_run: bool) -> int:
             ]
             command = next((candidate for candidate in candidates if candidate and candidate.is_file()), None)
             command_args = [str(command)] if command else []
-        else:
+        elif name == "claude":
             adapter_name = "ai-session-notify.ps1" if os.name == "nt" else "ai-session-notify"
             candidates = [
                 Path(os.environ["AI_SESSION_NOTIFIER_CLAUDE_ADAPTER"])
@@ -703,6 +879,26 @@ def run_test(tool: str, dry_run: bool) -> int:
                 else None,
                 data_dir() / "bin" / adapter_name,
                 tool_dir / "claude-code-plugin" / "bin" / adapter_name,
+            ]
+            command = next((candidate for candidate in candidates if candidate and candidate.is_file()), None)
+            if os.name == "nt":
+                powershell = shutil.which("pwsh") or shutil.which("powershell")
+                command_args = (
+                    [powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(command)]
+                    if powershell and command
+                    else []
+                )
+            else:
+                command_args = [str(command)] if command else []
+        else:
+            adapter_name = "ai-session-notify.ps1" if os.name == "nt" else "ai-session-notify"
+            runtime_name = "kimi-session-notify.ps1" if os.name == "nt" else "kimi-session-notify"
+            candidates = [
+                Path(os.environ["AI_SESSION_NOTIFIER_KIMI_ADAPTER"])
+                if os.environ.get("AI_SESSION_NOTIFIER_KIMI_ADAPTER")
+                else None,
+                data_dir() / "bin" / runtime_name,
+                tool_dir / "kimi-code-plugin" / "hooks" / adapter_name,
             ]
             command = next((candidate for candidate in candidates if candidate and candidate.is_file()), None)
             if os.name == "nt":
@@ -752,7 +948,7 @@ def build_parser() -> argparse.ArgumentParser:
     cleanup_parser.add_argument("--json", action="store_true")
 
     test_parser = subparsers.add_parser("test", help="Send fixture notifications through an adapter.")
-    test_parser.add_argument("--tool", choices=("all", "codex", "claude"), default="all")
+    test_parser.add_argument("--tool", choices=("all", "codex", "claude", "kimi"), default="all")
     test_parser.add_argument("--dry-run", action="store_true")
     return parser
 

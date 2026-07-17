@@ -96,9 +96,9 @@ function Get-ConfigValue([string]$Path, [object]$DefaultValue) {
   return $node
 }
 
-function Resolve-ClaudeIconPath {
+function Resolve-KimiIconPath {
   foreach ($configured in @(
-    [string](Get-ConfigValue "notifications.claudeIconPath" ""),
+    [string](Get-ConfigValue "notifications.kimiIconPath" ""),
     [string](Get-ConfigValue "notifications.iconPath" "")
   )) {
     if (-not [string]::IsNullOrWhiteSpace($configured) -and (Test-Path -LiteralPath $configured -PathType Leaf)) {
@@ -112,10 +112,15 @@ function Resolve-ClaudeIconPath {
     (Join-Path $HOME ".cursor\extensions")
   )) {
     if (-not (Test-Path -LiteralPath $extensionRoot -PathType Container)) { continue }
-    $match = Get-ChildItem -Path (Join-Path $extensionRoot "anthropic.claude-code-*\resources\claude-logo.png") -File |
-      Sort-Object FullName -Descending |
-      Select-Object -First 1
-    if ($null -ne $match) { return $match.FullName }
+    foreach ($pattern in @(
+      "moonshot-ai.kimi-code-*\dist\kimi-logo.png",
+      "moonshot-ai.kimi-code-*\resources\kimi-icon-storefront.png"
+    )) {
+      $match = Get-ChildItem -Path (Join-Path $extensionRoot $pattern) -File |
+        Sort-Object FullName -Descending |
+        Select-Object -First 1
+      if ($null -ne $match) { return $match.FullName }
+    }
   }
   return ""
 }
@@ -197,12 +202,12 @@ function Write-SharedLedger {
   $entry = [ordered]@{
     schemaVersion = 1
     timestamp = ([datetime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ"))
-    tool = "Claude Code"
+    tool = "Kimi Code"
     event = $Script:EventName
     notificationType = $Script:NotificationType
     category = $Script:Category
     threadId = $Script:SessionId
-    source = "claude-code"
+    source = "kimi-code"
     cwd = $Script:Cwd
     targetUrl = $Script:TargetUrl
     title = $Script:Title
@@ -235,7 +240,7 @@ function Write-SharedLedger {
     }
     $identity = if ($Script:SessionId) { $Script:SessionId } else { $Script:Cwd }
     if (-not [string]::IsNullOrWhiteSpace($identity)) {
-      $key = "claude-code:$identity"
+      $key = "kimi-code:$identity"
       $registry.sessions | Add-Member -NotePropertyName $key -NotePropertyValue ([pscustomobject]$entry) -Force
       $registry.updatedAt = $entry.timestamp
       $encoding = New-Object System.Text.UTF8Encoding -ArgumentList $false
@@ -351,6 +356,49 @@ function Focus-VSCodeWindowByPath([string]$Path) {
   return $false
 }
 
+function Focus-KimiWindowByPath([string]$Path) {
+  Ensure-NativeMethods
+
+  $tokens = @()
+  if (-not [string]::IsNullOrWhiteSpace($Path)) {
+    $workspaceName = Split-Path -Path $Path -Leaf
+    $parentPath = Split-Path -Path $Path -Parent
+    $parentName = if ($parentPath) { Split-Path -Path $parentPath -Leaf } else { "" }
+    $tokens = @($Path, $workspaceName, $parentName) |
+      Where-Object { $_ -and $_.Length -gt 1 } |
+      Select-Object -Unique
+  }
+
+  $processNames = @(
+    "Code", "Code - Insiders", "Cursor", "WindowsTerminal", "wezterm-gui",
+    "Alacritty", "Warp", "pwsh", "powershell", "cmd"
+  )
+  $fallback = $null
+
+  foreach ($name in $processNames) {
+    foreach ($process in (Get-Process -Name $name -ErrorAction SilentlyContinue)) {
+      if ($process.MainWindowHandle -eq [IntPtr]::Zero) { continue }
+      if ($null -eq $fallback) { $fallback = $process }
+      $title = [string]$process.MainWindowTitle
+      if ([string]::IsNullOrWhiteSpace($title)) { continue }
+      foreach ($token in $tokens) {
+        if ($title.IndexOf($token, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+          [AISessionNotifier.NativeMethods]::ShowWindow($process.MainWindowHandle, 9) | Out-Null
+          [AISessionNotifier.NativeMethods]::SetForegroundWindow($process.MainWindowHandle) | Out-Null
+          return $true
+        }
+      }
+    }
+  }
+
+  if ($null -ne $fallback) {
+    [AISessionNotifier.NativeMethods]::ShowWindow($fallback.MainWindowHandle, 9) | Out-Null
+    [AISessionNotifier.NativeMethods]::SetForegroundWindow($fallback.MainWindowHandle) | Out-Null
+    return $true
+  }
+  return $false
+}
+
 function Open-VSCodeWorkspace([string]$Path) {
   if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
   $commands = @("code.cmd", "code-insiders.cmd", "codium.cmd", "code", "code-insiders", "codium")
@@ -371,6 +419,11 @@ function Test-IsVSCodeTarget([string]$Bundle, [string]$Url) {
 }
 
 function Open-Target([string]$Url, [string]$Bundle, [string]$Path, [string]$OpenWorkspace, [string]$FocusWindow) {
+  if ($Bundle -eq "kimi-code") {
+    Focus-KimiWindowByPath $Path | Out-Null
+    return
+  }
+
   $isVSCode = Test-IsVSCodeTarget $Bundle $Url
   $shouldFocus = (Test-Enabled $FocusWindow)
   $shouldOpenWorkspace = (Test-Enabled $OpenWorkspace)
@@ -395,7 +448,7 @@ function Open-Target([string]$Url, [string]$Bundle, [string]$Path, [string]$Open
   }
 }
 
-function Show-NotifierDialog([string]$Title, [string]$Message, [string]$Url, [string]$Path, [int]$TimeoutSeconds, [string]$IconPath) {
+function Show-NotifierDialog([string]$Title, [string]$Message, [string]$Url, [string]$Path, [int]$TimeoutSeconds, [string]$IconPath, [bool]$CanOpen) {
   Add-Type -AssemblyName System.Windows.Forms
   Add-Type -AssemblyName System.Drawing
 
@@ -436,7 +489,7 @@ function Show-NotifierDialog([string]$Title, [string]$Message, [string]$Url, [st
   $form.Controls.Add($label)
 
   $openButton = New-Object System.Windows.Forms.Button
-  $openButton.Text = if ([string]::IsNullOrWhiteSpace($Url)) { "OK" } else { "Open workspace" }
+  $openButton.Text = if ($CanOpen) { "Open session" } else { "OK" }
   $openButton.Width = 125
   $openButton.Height = 30
   $openButton.Left = 178
@@ -500,30 +553,45 @@ if ([string]::IsNullOrWhiteSpace($Script:Cwd)) { $Script:Cwd = (Get-Location).Pa
 $Script:LastMessage = Get-JsonValue $payload @("last_assistant_message", "lastAssistantMessage", "message")
 
 $Script:Category = "attention"
-switch ($Script:NotificationType) {
-  "permission_prompt" {
+switch ($Script:EventName) {
+  "PermissionRequest" {
     $Script:Category = "permission"
-    $Script:Title = "Claude Code needs permission"
+    $Script:Title = "Kimi Code needs permission"
     $Script:Message = "Approve or reject the permission request to continue."
     $soundKind = "Exclamation"
   }
-  "idle_prompt" {
-    $Script:Category = "idle"
-    $Script:Title = "Claude Code is waiting"
-    $Script:Message = "The current turn is idle and waiting for review."
+  "Stop" {
+    $Script:Category = "stop"
+    $Script:Title = "Kimi Code turn stopped"
+    $Script:Message = "The current turn stopped and is ready for review."
+    $soundKind = "Asterisk"
+  }
+  "StopFailure" {
+    $Script:Category = "error"
+    $Script:Title = "Kimi Code turn failed"
+    $Script:Message = "The current turn stopped because of an error and needs review."
+    $soundKind = "Exclamation"
+  }
+  "Notification" {
+    if ($Script:NotificationType -eq "task.completed") {
+      $Script:Category = "completion"
+      $Script:Title = "Kimi Code background task finished"
+      $Script:Message = "A background task finished and is ready for review."
+    } else {
+      $Script:Title = "Kimi Code notification"
+      $Script:Message = "Kimi Code needs your attention."
+    }
     $soundKind = "Asterisk"
   }
   default {
-    $Script:Title = "Claude Code notification"
-    $Script:Message = "Claude Code needs your attention."
+    $Script:Title = "Kimi Code notification"
+    $Script:Message = "Kimi Code needs your attention."
     $soundKind = "Asterisk"
   }
 }
 
-$encodedCwd = [System.Uri]::EscapeDataString($Script:Cwd)
-$encodedPrompt = [System.Uri]::EscapeDataString("Return to this Claude Code workspace.")
-$Script:TargetUrl = "claude-cli://open?cwd=$encodedCwd&q=$encodedPrompt"
-$Script:IconPath = Resolve-ClaudeIconPath
+$Script:TargetUrl = ""
+$Script:IconPath = Resolve-KimiIconPath
 
 $Script:Suppressed = $false
 $Script:SuppressionReason = ""
@@ -533,7 +601,7 @@ if (-not (Test-Enabled (Get-ConfigValue "notifications.enabled" $true))) {
 }
 
 if (-not $Script:Suppressed) {
-  Apply-Dedupe (Get-ConfigValue "noise.dedupeSeconds" 20) ("claude-code|{0}|{1}|{2}|{3}" -f $Script:EventName, $Script:NotificationType, $Script:SessionId, $Script:Cwd)
+  Apply-Dedupe (Get-ConfigValue "noise.dedupeSeconds" 20) ("kimi-code|{0}|{1}|{2}|{3}" -f $Script:EventName, $Script:NotificationType, $Script:SessionId, $Script:Cwd)
 }
 
 Write-SharedLedger
@@ -552,10 +620,10 @@ if (Test-Enabled (Get-ConfigValue "notifications.sound" $true)) {
 }
 
 if (Test-Enabled (Get-ConfigValue "notifications.dialogs" $true)) {
-  $timeout = if ($Script:NotificationType -eq "permission_prompt") { 30 } else { 8 }
-  $action = Show-NotifierDialog $Script:Title $Script:Message $Script:TargetUrl $Script:Cwd $timeout $Script:IconPath
+  $timeout = if ($Script:EventName -eq "PermissionRequest") { 30 } elseif ($Script:EventName -eq "StopFailure") { 12 } else { 8 }
+  $action = Show-NotifierDialog $Script:Title $Script:Message $Script:TargetUrl $Script:Cwd $timeout $Script:IconPath $true
   if ($action -eq "open") {
-    Open-Target $Script:TargetUrl "claude-code" $Script:Cwd (Get-ConfigValue "routing.openWorkspaceFirst" $true) (Get-ConfigValue "routing.focusVSCodeWindow" $true)
+    Open-Target $Script:TargetUrl "kimi-code" $Script:Cwd (Get-ConfigValue "routing.openWorkspaceFirst" $true) (Get-ConfigValue "routing.focusVSCodeWindow" $true)
   }
 } else {
   Write-Host ("{0}: {1}" -f $Script:Title, $Script:Message)

@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 
-VERSION = "0.5.0"
+VERSION = "0.5.1"
 CONFIG_VERSION = 2
 MIN_KIMI_PLUGIN_HOOKS_VERSION = "0.20.1"
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -27,6 +27,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "dialogs": True,
         "sound": True,
         "ignoreDnD": True,
+        "locale": "auto",
         "iconPath": "",
         "codexIconPath": "",
         "claudeIconPath": "",

@@ -27,7 +27,7 @@ json_get() {
 }
 
 urlencode() {
-  perl -CS -pe 's/([^A-Za-z0-9_.~-])/sprintf("%%%02X", ord($1))/ge' 2>/dev/null
+  perl -0777 -pe 's/([^A-Za-z0-9_.~-])/sprintf("%%%02X", ord($1))/ge' 2>/dev/null
 }
 
 log_line() {
@@ -65,6 +65,7 @@ ensure_app_state() {
     "dialogs": true,
     "sound": true,
     "ignoreDnD": true,
+    "locale": "auto",
     "iconPath": "",
     "codexIconPath": "",
     "claudeIconPath": "",
@@ -138,6 +139,35 @@ flag_enabled() {
     true|1|yes|on) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+normalize_notification_locale() {
+  value=$(printf '%s' "${1:-}" | tr '_' '-' | tr '[:upper:]' '[:lower:]')
+  case "$value" in
+    zh|zh-cn*|zh-hans*|zh-sg*) printf '%s' "zh-CN" ;;
+    *) printf '%s' "en" ;;
+  esac
+}
+
+resolve_notification_locale() {
+  configured=${AI_SESSION_NOTIFIER_LOCALE:-$(config_get "notifications.locale" "auto")}
+  normalized=$(printf '%s' "$configured" | tr '_' '-' | tr '[:upper:]' '[:lower:]')
+  case "$normalized" in
+    ''|auto) ;;
+    *) normalize_notification_locale "$normalized"; return 0 ;;
+  esac
+
+  language_hint=
+  if [ "$(uname -s 2>/dev/null || printf unknown)" = "Darwin" ] && [ -x /usr/bin/defaults ]; then
+    language_hint=$(/usr/bin/defaults read -g AppleLanguages 2>/dev/null | awk -F '"' '/"/ { print $2; exit }' || true)
+    if [ -z "$language_hint" ]; then
+      language_hint=$(/usr/bin/defaults read -g AppleLocale 2>/dev/null || true)
+    fi
+  fi
+  if [ -z "$language_hint" ]; then
+    language_hint=${LC_ALL:-${LC_MESSAGES:-${LANG:-en}}}
+  fi
+  normalize_notification_locale "$language_hint"
 }
 
 hash_key() {
@@ -361,31 +391,66 @@ cwd=$(json_get cwd workspace_dir project_dir)
 cwd=${cwd:-${PWD:-}}
 last_message=$(json_get last_assistant_message lastAssistantMessage message)
 category=attention
+notification_locale=$(resolve_notification_locale)
 
 case "$notification_type" in
   permission_prompt)
     category=permission
-    title="Claude Code needs permission"
-    message="Approve or reject the permission request to continue."
     sound="Hero"
     ;;
   idle_prompt)
     category=idle
-    title="Claude Code is waiting"
-    message="The current turn is idle and waiting for review."
     sound="Glass"
     ;;
   *)
-    title="Claude Code notification"
-    message="Claude Code needs your attention."
     sound="Glass"
     ;;
 esac
 
+if [ "$notification_locale" = "zh-CN" ]; then
+  open_button_label="打开工作区"
+  ok_button_label="知道了"
+  dismiss_button_label="关闭"
+  return_prompt="返回这个 Claude Code 工作区。"
+  case "$category" in
+    permission)
+      title="Claude Code 正在等待权限确认"
+      message="请批准或拒绝权限请求以继续。"
+      ;;
+    idle)
+      title="Claude Code 正在等待"
+      message="本轮已进入空闲状态，可以回来查看了。"
+      ;;
+    *)
+      title="Claude Code 有一条新提醒"
+      message="Claude Code 需要你查看。"
+      ;;
+  esac
+else
+  open_button_label="Open workspace"
+  ok_button_label="OK"
+  dismiss_button_label="Dismiss"
+  return_prompt="Return to this Claude Code workspace."
+  case "$category" in
+    permission)
+      title="Claude Code needs permission"
+      message="Approve or reject the permission request to continue."
+      ;;
+    idle)
+      title="Claude Code is waiting"
+      message="The current turn is idle and waiting for review."
+      ;;
+    *)
+      title="Claude Code notification"
+      message="Claude Code needs your attention."
+      ;;
+  esac
+fi
+
 target_url=""
 if [ -n "$cwd" ]; then
   encoded_cwd=$(printf '%s' "$cwd" | urlencode)
-  encoded_prompt=$(printf '%s' "Return to this Claude Code workspace." | urlencode)
+  encoded_prompt=$(printf '%s' "$return_prompt" | urlencode)
   target_url="claude-cli://open?cwd=$encoded_cwd&q=$encoded_prompt"
 fi
 
@@ -493,25 +558,28 @@ case "$(uname -s 2>/dev/null || printf unknown)" in
     if [ "$notification_type" = "permission_prompt" ]; then
       alert_timeout=30
     fi
-    osascript - "$title" "$message" "$alert_timeout" "$icon_path" "$target_url" <<'OSA' >/dev/null 2>&1 &
+    osascript - "$title" "$message" "$alert_timeout" "$icon_path" "$target_url" "$open_button_label" "$ok_button_label" "$dismiss_button_label" <<'OSA' >/dev/null 2>&1 &
 on run argv
   set notificationTitle to item 1 of argv
   set notificationMessage to item 2 of argv
   set timeoutSeconds to (item 3 of argv) as integer
   set iconPath to item 4 of argv
   set targetUrl to item 5 of argv
+  set openButtonLabel to item 6 of argv
+  set okButtonLabel to item 7 of argv
+  set dismissButtonLabel to item 8 of argv
 
   if targetUrl is not "" then
-    set openButton to "Open workspace"
+    set openButton to openButtonLabel
   else
-    set openButton to "OK"
+    set openButton to okButtonLabel
   end if
 
   try
     if iconPath is not "" then
-      set dialogResult to display dialog notificationMessage with title notificationTitle buttons {"Dismiss", openButton} default button openButton giving up after timeoutSeconds with icon POSIX file iconPath
+      set dialogResult to display dialog notificationMessage with title notificationTitle buttons {dismissButtonLabel, openButton} default button openButton giving up after timeoutSeconds with icon POSIX file iconPath
     else
-      set dialogResult to display dialog notificationMessage with title notificationTitle buttons {"Dismiss", openButton} default button openButton giving up after timeoutSeconds
+      set dialogResult to display dialog notificationMessage with title notificationTitle buttons {dismissButtonLabel, openButton} default button openButton giving up after timeoutSeconds
     end if
 
     if targetUrl is not "" and gave up of dialogResult is false and button returned of dialogResult is openButton then

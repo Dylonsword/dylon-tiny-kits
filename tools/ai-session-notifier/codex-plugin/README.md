@@ -13,6 +13,10 @@ events without showing a desktop notification.
 See the [shared AI Session Notifier README](../README.md) for privacy, storage,
 configuration, platform support, and complete removal.
 
+Notification titles, messages, and buttons follow the system language by
+default. Set shared `notifications.locale` or `AI_SESSION_NOTIFIER_LOCALE` to
+`zh-CN` or `en` to override it.
+
 ## Install
 
 From the repository root:

@@ -44,6 +44,7 @@ function Ensure-AppState {
         dialogs = $true
         sound = $true
         ignoreDnD = $true
+        locale = "auto"
         iconPath = ""
         codexIconPath = ""
         claudeIconPath = ""
@@ -94,6 +95,30 @@ function Get-ConfigValue([string]$Path, [object]$DefaultValue) {
   }
   if ($null -eq $node) { return $DefaultValue }
   return $node
+}
+
+function ConvertTo-NotificationLocale([string]$Value) {
+  $normalized = $Value.Trim().Replace("_", "-").ToLowerInvariant()
+  if ($normalized -eq "zh" -or $normalized -match "^zh-(cn|hans|sg)(-|\.|@|$)") {
+    return "zh-CN"
+  }
+  return "en"
+}
+
+function Resolve-NotificationLocale {
+  $configured = if ($env:AI_SESSION_NOTIFIER_LOCALE) {
+    $env:AI_SESSION_NOTIFIER_LOCALE
+  } else {
+    [string](Get-ConfigValue "notifications.locale" "auto")
+  }
+  if (-not [string]::IsNullOrWhiteSpace($configured) -and $configured.ToLowerInvariant() -ne "auto") {
+    return ConvertTo-NotificationLocale $configured
+  }
+  try {
+    return ConvertTo-NotificationLocale ([System.Globalization.CultureInfo]::CurrentUICulture.Name)
+  } catch {
+    return "en"
+  }
 }
 
 function Resolve-KimiIconPath {
@@ -448,7 +473,18 @@ function Open-Target([string]$Url, [string]$Bundle, [string]$Path, [string]$Open
   }
 }
 
-function Show-NotifierDialog([string]$Title, [string]$Message, [string]$Url, [string]$Path, [int]$TimeoutSeconds, [string]$IconPath, [bool]$CanOpen) {
+function Show-NotifierDialog(
+  [string]$Title,
+  [string]$Message,
+  [string]$Url,
+  [string]$Path,
+  [int]$TimeoutSeconds,
+  [string]$IconPath,
+  [bool]$CanOpen,
+  [string]$OpenButtonLabel,
+  [string]$OkButtonLabel,
+  [string]$DismissButtonLabel
+) {
   Add-Type -AssemblyName System.Windows.Forms
   Add-Type -AssemblyName System.Drawing
 
@@ -489,7 +525,7 @@ function Show-NotifierDialog([string]$Title, [string]$Message, [string]$Url, [st
   $form.Controls.Add($label)
 
   $openButton = New-Object System.Windows.Forms.Button
-  $openButton.Text = if ($CanOpen) { "Open session" } else { "OK" }
+  $openButton.Text = if ($CanOpen) { $OpenButtonLabel } else { $OkButtonLabel }
   $openButton.Width = 125
   $openButton.Height = 30
   $openButton.Left = 178
@@ -497,7 +533,7 @@ function Show-NotifierDialog([string]$Title, [string]$Message, [string]$Url, [st
   $form.Controls.Add($openButton)
 
   $dismissButton = New-Object System.Windows.Forms.Button
-  $dismissButton.Text = "Dismiss"
+  $dismissButton.Text = $DismissButtonLabel
   $dismissButton.Width = 92
   $dismissButton.Height = 30
   $dismissButton.Left = 316
@@ -551,42 +587,94 @@ $Script:SessionId = Get-JsonValue $payload @("session_id", "sessionId", "convers
 $Script:Cwd = Get-JsonValue $payload @("cwd", "workspace_dir", "project_dir")
 if ([string]::IsNullOrWhiteSpace($Script:Cwd)) { $Script:Cwd = (Get-Location).Path }
 $Script:LastMessage = Get-JsonValue $payload @("last_assistant_message", "lastAssistantMessage", "message")
+$Script:NotificationLocale = Resolve-NotificationLocale
 
 $Script:Category = "attention"
 switch ($Script:EventName) {
   "PermissionRequest" {
     $Script:Category = "permission"
-    $Script:Title = "Kimi Code needs permission"
-    $Script:Message = "Approve or reject the permission request to continue."
     $soundKind = "Exclamation"
   }
   "Stop" {
     $Script:Category = "stop"
-    $Script:Title = "Kimi Code turn stopped"
-    $Script:Message = "The current turn stopped and is ready for review."
     $soundKind = "Asterisk"
   }
   "StopFailure" {
     $Script:Category = "error"
-    $Script:Title = "Kimi Code turn failed"
-    $Script:Message = "The current turn stopped because of an error and needs review."
     $soundKind = "Exclamation"
   }
   "Notification" {
     if ($Script:NotificationType -eq "task.completed") {
       $Script:Category = "completion"
-      $Script:Title = "Kimi Code background task finished"
-      $Script:Message = "A background task finished and is ready for review."
-    } else {
-      $Script:Title = "Kimi Code notification"
-      $Script:Message = "Kimi Code needs your attention."
     }
     $soundKind = "Asterisk"
   }
   default {
-    $Script:Title = "Kimi Code notification"
-    $Script:Message = "Kimi Code needs your attention."
     $soundKind = "Asterisk"
+  }
+}
+
+if ($Script:NotificationLocale -eq "zh-CN") {
+  $openButtonLabel = "打开会话"
+  $okButtonLabel = "知道了"
+  $dismissButtonLabel = "关闭"
+  switch ($Script:EventName) {
+    "PermissionRequest" {
+      $Script:Title = "Kimi Code 正在等待权限确认"
+      $Script:Message = "请批准或拒绝权限请求以继续。"
+    }
+    "Stop" {
+      $Script:Title = "Kimi Code 本轮已停下"
+      $Script:Message = "本轮回复已经停止，可以回来查看了。"
+    }
+    "StopFailure" {
+      $Script:Title = "Kimi Code 本轮执行失败"
+      $Script:Message = "本轮因错误停止，需要回来检查。"
+    }
+    "Notification" {
+      if ($Script:NotificationType -eq "task.completed") {
+        $Script:Title = "Kimi Code 后台任务已完成"
+        $Script:Message = "后台任务已经完成，可以回来查看了。"
+      } else {
+        $Script:Title = "Kimi Code 有一条新提醒"
+        $Script:Message = "Kimi Code 需要你查看。"
+      }
+    }
+    default {
+      $Script:Title = "Kimi Code 有一条新提醒"
+      $Script:Message = "Kimi Code 需要你查看。"
+    }
+  }
+} else {
+  $openButtonLabel = "Open session"
+  $okButtonLabel = "OK"
+  $dismissButtonLabel = "Dismiss"
+  switch ($Script:EventName) {
+    "PermissionRequest" {
+      $Script:Title = "Kimi Code needs permission"
+      $Script:Message = "Approve or reject the permission request to continue."
+    }
+    "Stop" {
+      $Script:Title = "Kimi Code turn stopped"
+      $Script:Message = "The current turn stopped and is ready for review."
+    }
+    "StopFailure" {
+      $Script:Title = "Kimi Code turn failed"
+      $Script:Message = "The current turn stopped because of an error and needs review."
+    }
+    "Notification" {
+      if ($Script:NotificationType -eq "task.completed") {
+        $Script:Title = "Kimi Code background task finished"
+        $Script:Message = "A background task finished and is ready for review."
+      } else {
+        $Script:Title = "Kimi Code notification"
+        $Script:Message = "Kimi Code needs your attention."
+      }
+    }
+    default {
+      $Script:Title = "Kimi Code notification"
+      $Script:Message = "Kimi Code needs your attention."
+    }
   }
 }
 
@@ -621,7 +709,7 @@ if (Test-Enabled (Get-ConfigValue "notifications.sound" $true)) {
 
 if (Test-Enabled (Get-ConfigValue "notifications.dialogs" $true)) {
   $timeout = if ($Script:EventName -eq "PermissionRequest") { 30 } elseif ($Script:EventName -eq "StopFailure") { 12 } else { 8 }
-  $action = Show-NotifierDialog $Script:Title $Script:Message $Script:TargetUrl $Script:Cwd $timeout $Script:IconPath $true
+  $action = Show-NotifierDialog $Script:Title $Script:Message $Script:TargetUrl $Script:Cwd $timeout $Script:IconPath $true $openButtonLabel $okButtonLabel $dismissButtonLabel
   if ($action -eq "open") {
     Open-Target $Script:TargetUrl "kimi-code" $Script:Cwd (Get-ConfigValue "routing.openWorkspaceFirst" $true) (Get-ConfigValue "routing.focusVSCodeWindow" $true)
   }

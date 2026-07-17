@@ -2,6 +2,21 @@
 
 All notable changes to AI Session Notifier are documented here.
 
+## [0.5.1] - 2026-07-16
+
+### Added
+
+- Added automatic English and Simplified Chinese notification text for Codex,
+  Claude Code, and Kimi Code on macOS, Linux, and Windows adapters.
+- Added `notifications.locale` with `auto`, `zh-CN`, and `en` values, plus the
+  `AI_SESSION_NOTIFIER_LOCALE` environment override.
+
+### Changed
+
+- Localized prominent-dialog buttons and Claude Code's workspace-return prompt.
+- Kept Traditional Chinese system locales on the English fallback until a
+  dedicated Traditional Chinese translation is available.
+
 ## [0.5.0] - 2026-07-16
 
 ### Added

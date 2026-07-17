@@ -51,6 +51,10 @@ and [plugins](https://www.kimi.com/code/docs/en/kimi-code-cli/customization/plug
 `Stop` describes one turn, not guaranteed completion of a larger goal or
 multi-turn workflow.
 
+Notification titles, messages, and buttons follow the system language by
+default. Set shared `notifications.locale` or `AI_SESSION_NOTIFIER_LOCALE` to
+`zh-CN` or `en` to override it.
+
 ## Return to Session
 
 On macOS, the adapter records the terminal or VS Code bundle that launched

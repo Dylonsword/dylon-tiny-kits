@@ -33,6 +33,7 @@ class HookTests(unittest.TestCase):
                 "AI_SESSION_NOTIFIER_CONFIG_DIR": str(self.root / "config"),
                 "AI_SESSION_NOTIFIER_DATA_DIR": str(self.root / "data"),
                 "AI_SESSION_NOTIFIER_DRY_RUN": "1",
+                "AI_SESSION_NOTIFIER_LOCALE": "en",
             }
         )
 
@@ -125,6 +126,56 @@ class HookTests(unittest.TestCase):
         self.assertIn("turn stopped", str(stop_event["title"]).lower())
         self.assertNotIn("task completed", str(stop_event["title"]).lower())
         self.assertNotIn("task finished", str(stop_event["message"]).lower())
+
+    def test_notification_locale_can_be_forced_to_simplified_chinese(self) -> None:
+        self.env["AI_SESSION_NOTIFIER_LOCALE"] = "zh-CN"
+        if shutil.which("zsh"):
+            self.invoke(
+                CODEX_HOOK,
+                {
+                    "hook_event_name": "PermissionRequest",
+                    "threadId": "codex-zh-cn",
+                    "cwd": "/tmp/codex-zh-cn",
+                },
+            )
+        self.invoke(
+            CLAUDE_HOOK,
+            {
+                "hook_event_name": "Notification",
+                "notification_type": "permission_prompt",
+                "session_id": "claude-zh-cn",
+                "cwd": "/tmp/claude-zh-cn",
+            },
+        )
+        self.invoke(
+            KIMI_HOOK,
+            {
+                "hook_event_name": "PermissionRequest",
+                "session_id": "kimi-zh-cn",
+                "cwd": "/tmp/kimi-zh-cn",
+            },
+        )
+
+        events_by_tool = {str(event["tool"]): event for event in self.events()}
+        self.assertIn("权限", str(events_by_tool["Claude Code"]["title"]))
+        self.assertIn("%E8%BF%94", str(events_by_tool["Claude Code"]["targetUrl"]))
+        self.assertIn("权限", str(events_by_tool["Kimi Code"]["title"]))
+        if shutil.which("zsh"):
+            self.assertIn("权限", str(events_by_tool["Codex"]["title"]))
+
+    def test_traditional_chinese_locale_falls_back_to_english(self) -> None:
+        self.env["AI_SESSION_NOTIFIER_LOCALE"] = "zh-TW"
+        self.invoke(
+            KIMI_HOOK,
+            {
+                "hook_event_name": "Stop",
+                "session_id": "kimi-zh-tw",
+                "cwd": "/tmp/kimi-zh-tw",
+            },
+        )
+
+        event = self.events()[0]
+        self.assertIn("turn stopped", str(event["title"]).lower())
 
     def test_concurrent_claude_events_remain_valid_jsonl(self) -> None:
         def send(index: int) -> None:

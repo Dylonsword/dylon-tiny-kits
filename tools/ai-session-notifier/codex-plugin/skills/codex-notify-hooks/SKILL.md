@@ -60,9 +60,14 @@ Do not suggest bypassing hook trust for normal interactive use.
 
 ## Behavior
 
-- `Stop` notifications use the title `Codex 本轮已停下`.
-- Observation-window `Stop` notifications use the title `Codex 已进入观察窗口`.
-- `PermissionRequest` notifications use the title `Codex 正在等你确认权限`.
+- Notification titles, messages, and buttons follow the system language by
+  default, with English and Simplified Chinese included.
+- `notifications.locale` accepts `auto`, `zh-CN`, or `en`.
+- `AI_SESSION_NOTIFIER_LOCALE` overrides the configured language.
+- `Stop` means the current turn stopped; never describe it as guaranteed
+  whole-task completion.
+- Observation-window `Stop` events explicitly say the task may still be
+  waiting for a later check.
 - Events are written to `~/.local/share/ai-session-notifier/events.jsonl`.
 - Latest session routes are compacted in `~/.local/share/ai-session-notifier/sessions.json`.
 - Runtime config lives at `~/.config/ai-session-notifier/config.json`.
@@ -74,7 +79,6 @@ Do not suggest bypassing hook trust for normal interactive use.
   - `vscode://openai.chatgpt/local/<thread_id>` for VS Code-originated threads.
   - `codex://threads/<thread_id>` for Codex Desktop-originated threads.
 - Without `terminal-notifier`, the package falls back to plain macOS `osascript` notifications.
-- `Stop` means the current turn stopped; never describe it as guaranteed whole-task completion.
 
 ## Safety
 

@@ -19,6 +19,11 @@ The notifier entrypoint is `bin/ai-session-notify` on macOS/Linux and
 `bin/ai-session-notify.cmd` on Windows. The Windows launcher delegates to
 `bin/ai-session-notify.ps1`.
 
+Notification titles, messages, and buttons follow the system language by
+default. English and Simplified Chinese are included. Set
+`notifications.locale` to `auto`, `zh-CN`, or `en`, or use the
+`AI_SESSION_NOTIFIER_LOCALE` environment override.
+
 On macOS/Linux, events are written to the private shared AI Session Notifier ledger:
 
 ```text

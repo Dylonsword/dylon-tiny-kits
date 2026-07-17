@@ -11,6 +11,7 @@
 | Codex 提醒 | 监听 `Stop` 和 `PermissionRequest`。 |
 | Claude Code 提醒 | 监听权限请求和空闲事件。 |
 | Kimi Code 提醒 | 监听本轮停止、权限请求、执行失败和后台任务完成事件。 |
+| 通知语言 | 三套适配器统一跟随系统语言，也可以固定为简体中文或英文。 |
 | 返回会话 | 根据 hook 元数据自动选择 Codex 桌面端、VS Code、Claude Code 或启动 Kimi 的终端宿主。 |
 | 多窗口定位 | 打开会话链接前，先尽力抬起匹配的 VS Code 工作区窗口。 |
 | 降噪 | 合并短时间重复提醒，并识别可能仍在观察/等待的任务。 |
@@ -197,6 +198,7 @@ macOS 会优先读取本机 ChatGPT/Claude 应用或 OpenAI、Anthropic、Moonsh
 - `notifications.enabled`：总通知开关。
 - `notifications.dialogs`：显示醒目的 macOS/Windows 对话框。
 - `notifications.sound`：声音开关。
+- `notifications.locale`：可设为 `auto`（默认）、`zh-CN` 或 `en`。自动模式会为 `zh`、`zh-CN`、`zh-Hans`、`zh-SG` 系统区域显示简体中文，其他区域显示英文。
 - `notifications.codexIconPath`、`notifications.claudeIconPath`、`notifications.kimiIconPath`：分别覆盖三个工具的本地图标。
 - `notifications.iconPath`：所有工具共用的兜底图标。
 - `noise.dedupeSeconds`：重复事件静默时间。
@@ -205,6 +207,8 @@ macOS 会优先读取本机 ChatGPT/Claude 应用或 OpenAI、Anthropic、Moonsh
 - `ledger.retentionDays`、`ledger.maxBytes`：本地存储上限。
 - `debug.saveRawPayload`：显式选择保存最近一次原始 payload。
 - `routing.openWorkspaceFirst`、`routing.focusVSCodeWindow`：控制 VS Code 尽力定位。
+
+环境变量 `AI_SESSION_NOTIFIER_LOCALE` 的优先级高于配置文件，可在单个进程或 shell 环境中临时指定 `zh-CN` 或 `en`。
 
 适配器每天最多自动清理一次；也可以用管理命令随时清理。旧的追加式 `session-registry.jsonl` 会自动迁移为紧凑路由表。
 

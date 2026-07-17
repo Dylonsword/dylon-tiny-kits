@@ -52,6 +52,7 @@ class ManagerTests(unittest.TestCase):
 
         self.assertTrue(payload["changed"])
         self.assertEqual(config["version"], 2)
+        self.assertEqual(config["notifications"]["locale"], "auto")
         self.assertFalse(config["ledger"]["includeMessageExcerpt"])
         self.assertFalse(config["debug"]["saveRawPayload"])
         self.assertTrue(all("version" not in value for value in config.values() if isinstance(value, dict)))
@@ -198,7 +199,7 @@ class ManagerTests(unittest.TestCase):
         managed = kimi_home / "plugins" / "managed" / "ai-session-notifier"
         managed.mkdir(parents=True)
         (managed / "kimi.plugin.json").write_text(
-            json.dumps({"name": "ai-session-notifier", "version": "0.5.0"}),
+            json.dumps({"name": "ai-session-notifier", "version": "0.5.1"}),
             encoding="utf-8",
         )
         registry = kimi_home / "plugins" / "installed.json"

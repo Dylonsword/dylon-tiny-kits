@@ -23,6 +23,7 @@
     "iconPath": "",
     "ignoreDnD": true,
     "kimiIconPath": "",
+    "locale": "auto",
     "sound": true
   },
   "routing": {

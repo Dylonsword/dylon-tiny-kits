@@ -44,6 +44,7 @@ function Ensure-AppState {
         dialogs = $true
         sound = $true
         ignoreDnD = $true
+        locale = "auto"
         iconPath = ""
         codexIconPath = ""
         claudeIconPath = ""
@@ -94,6 +95,30 @@ function Get-ConfigValue([string]$Path, [object]$DefaultValue) {
   }
   if ($null -eq $node) { return $DefaultValue }
   return $node
+}
+
+function ConvertTo-NotificationLocale([string]$Value) {
+  $normalized = $Value.Trim().Replace("_", "-").ToLowerInvariant()
+  if ($normalized -eq "zh" -or $normalized -match "^zh-(cn|hans|sg)(-|\.|@|$)") {
+    return "zh-CN"
+  }
+  return "en"
+}
+
+function Resolve-NotificationLocale {
+  $configured = if ($env:AI_SESSION_NOTIFIER_LOCALE) {
+    $env:AI_SESSION_NOTIFIER_LOCALE
+  } else {
+    [string](Get-ConfigValue "notifications.locale" "auto")
+  }
+  if (-not [string]::IsNullOrWhiteSpace($configured) -and $configured.ToLowerInvariant() -ne "auto") {
+    return ConvertTo-NotificationLocale $configured
+  }
+  try {
+    return ConvertTo-NotificationLocale ([System.Globalization.CultureInfo]::CurrentUICulture.Name)
+  } catch {
+    return "en"
+  }
 }
 
 function Resolve-ClaudeIconPath {
@@ -395,7 +420,17 @@ function Open-Target([string]$Url, [string]$Bundle, [string]$Path, [string]$Open
   }
 }
 
-function Show-NotifierDialog([string]$Title, [string]$Message, [string]$Url, [string]$Path, [int]$TimeoutSeconds, [string]$IconPath) {
+function Show-NotifierDialog(
+  [string]$Title,
+  [string]$Message,
+  [string]$Url,
+  [string]$Path,
+  [int]$TimeoutSeconds,
+  [string]$IconPath,
+  [string]$OpenButtonLabel,
+  [string]$OkButtonLabel,
+  [string]$DismissButtonLabel
+) {
   Add-Type -AssemblyName System.Windows.Forms
   Add-Type -AssemblyName System.Drawing
 
@@ -436,7 +471,7 @@ function Show-NotifierDialog([string]$Title, [string]$Message, [string]$Url, [st
   $form.Controls.Add($label)
 
   $openButton = New-Object System.Windows.Forms.Button
-  $openButton.Text = if ([string]::IsNullOrWhiteSpace($Url)) { "OK" } else { "Open workspace" }
+  $openButton.Text = if ([string]::IsNullOrWhiteSpace($Url)) { $OkButtonLabel } else { $OpenButtonLabel }
   $openButton.Width = 125
   $openButton.Height = 30
   $openButton.Left = 178
@@ -444,7 +479,7 @@ function Show-NotifierDialog([string]$Title, [string]$Message, [string]$Url, [st
   $form.Controls.Add($openButton)
 
   $dismissButton = New-Object System.Windows.Forms.Button
-  $dismissButton.Text = "Dismiss"
+  $dismissButton.Text = $DismissButtonLabel
   $dismissButton.Width = 92
   $dismissButton.Height = 30
   $dismissButton.Left = 316
@@ -498,30 +533,65 @@ $Script:SessionId = Get-JsonValue $payload @("session_id", "sessionId", "convers
 $Script:Cwd = Get-JsonValue $payload @("cwd", "workspace_dir", "project_dir")
 if ([string]::IsNullOrWhiteSpace($Script:Cwd)) { $Script:Cwd = (Get-Location).Path }
 $Script:LastMessage = Get-JsonValue $payload @("last_assistant_message", "lastAssistantMessage", "message")
+$Script:NotificationLocale = Resolve-NotificationLocale
 
 $Script:Category = "attention"
 switch ($Script:NotificationType) {
   "permission_prompt" {
     $Script:Category = "permission"
-    $Script:Title = "Claude Code needs permission"
-    $Script:Message = "Approve or reject the permission request to continue."
     $soundKind = "Exclamation"
   }
   "idle_prompt" {
     $Script:Category = "idle"
-    $Script:Title = "Claude Code is waiting"
-    $Script:Message = "The current turn is idle and waiting for review."
     $soundKind = "Asterisk"
   }
   default {
-    $Script:Title = "Claude Code notification"
-    $Script:Message = "Claude Code needs your attention."
     $soundKind = "Asterisk"
   }
 }
 
+if ($Script:NotificationLocale -eq "zh-CN") {
+  $openButtonLabel = "打开工作区"
+  $okButtonLabel = "知道了"
+  $dismissButtonLabel = "关闭"
+  $returnPrompt = "返回这个 Claude Code 工作区。"
+  switch ($Script:Category) {
+    "permission" {
+      $Script:Title = "Claude Code 正在等待权限确认"
+      $Script:Message = "请批准或拒绝权限请求以继续。"
+    }
+    "idle" {
+      $Script:Title = "Claude Code 正在等待"
+      $Script:Message = "本轮已进入空闲状态，可以回来查看了。"
+    }
+    default {
+      $Script:Title = "Claude Code 有一条新提醒"
+      $Script:Message = "Claude Code 需要你查看。"
+    }
+  }
+} else {
+  $openButtonLabel = "Open workspace"
+  $okButtonLabel = "OK"
+  $dismissButtonLabel = "Dismiss"
+  $returnPrompt = "Return to this Claude Code workspace."
+  switch ($Script:Category) {
+    "permission" {
+      $Script:Title = "Claude Code needs permission"
+      $Script:Message = "Approve or reject the permission request to continue."
+    }
+    "idle" {
+      $Script:Title = "Claude Code is waiting"
+      $Script:Message = "The current turn is idle and waiting for review."
+    }
+    default {
+      $Script:Title = "Claude Code notification"
+      $Script:Message = "Claude Code needs your attention."
+    }
+  }
+}
+
 $encodedCwd = [System.Uri]::EscapeDataString($Script:Cwd)
-$encodedPrompt = [System.Uri]::EscapeDataString("Return to this Claude Code workspace.")
+$encodedPrompt = [System.Uri]::EscapeDataString($returnPrompt)
 $Script:TargetUrl = "claude-cli://open?cwd=$encodedCwd&q=$encodedPrompt"
 $Script:IconPath = Resolve-ClaudeIconPath
 
@@ -553,7 +623,7 @@ if (Test-Enabled (Get-ConfigValue "notifications.sound" $true)) {
 
 if (Test-Enabled (Get-ConfigValue "notifications.dialogs" $true)) {
   $timeout = if ($Script:NotificationType -eq "permission_prompt") { 30 } else { 8 }
-  $action = Show-NotifierDialog $Script:Title $Script:Message $Script:TargetUrl $Script:Cwd $timeout $Script:IconPath
+  $action = Show-NotifierDialog $Script:Title $Script:Message $Script:TargetUrl $Script:Cwd $timeout $Script:IconPath $openButtonLabel $okButtonLabel $dismissButtonLabel
   if ($action -eq "open") {
     Open-Target $Script:TargetUrl "claude-code" $Script:Cwd (Get-ConfigValue "routing.openWorkspaceFirst" $true) (Get-ConfigValue "routing.focusVSCodeWindow" $true)
   }

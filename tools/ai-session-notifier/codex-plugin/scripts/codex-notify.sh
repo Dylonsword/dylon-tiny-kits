@@ -207,6 +207,7 @@ ensure_app_state() {
     "dialogs": true,
     "sound": true,
     "ignoreDnD": true,
+    "locale": "auto",
     "iconPath": "",
     "codexIconPath": "",
     "claudeIconPath": "",
@@ -279,6 +280,37 @@ flag_enabled() {
   local value
   value="$(printf '%s' "${1:-}" | /usr/bin/tr '[:upper:]' '[:lower:]')"
   [[ "$value" == "true" || "$value" == "1" || "$value" == "yes" || "$value" == "on" ]]
+}
+
+normalize_notification_locale() {
+  local value
+  value="$(printf '%s' "${1:-}" | /usr/bin/tr '_' '-' | /usr/bin/tr '[:upper:]' '[:lower:]')"
+  case "$value" in
+    zh|zh-cn*|zh-hans*|zh-sg*) printf '%s' "zh-CN" ;;
+    *) printf '%s' "en" ;;
+  esac
+}
+
+resolve_notification_locale() {
+  local configured normalized language_hint
+  configured="${AI_SESSION_NOTIFIER_LOCALE:-$(config_get "notifications.locale" "auto")}"
+  normalized="$(printf '%s' "$configured" | /usr/bin/tr '_' '-' | /usr/bin/tr '[:upper:]' '[:lower:]')"
+  case "$normalized" in
+    ''|auto) ;;
+    *) normalize_notification_locale "$normalized"; return 0 ;;
+  esac
+
+  language_hint=""
+  if [[ "$(/usr/bin/uname -s 2>/dev/null || printf unknown)" == "Darwin" && -x /usr/bin/defaults ]]; then
+    language_hint="$(/usr/bin/defaults read -g AppleLanguages 2>/dev/null | /usr/bin/awk -F '"' '/"/ { print $2; exit }' || true)"
+    if [[ -z "$language_hint" ]]; then
+      language_hint="$(/usr/bin/defaults read -g AppleLocale 2>/dev/null || true)"
+    fi
+  fi
+  if [[ -z "$language_hint" ]]; then
+    language_hint="${LC_ALL:-${LC_MESSAGES:-${LANG:-en}}}"
+  fi
+  normalize_notification_locale "$language_hint"
 }
 
 hash_key() {
@@ -539,41 +571,80 @@ fi
 
 category="attention"
 observation_event="false"
+notification_locale="$(resolve_notification_locale)"
 
 case "$event" in
   Stop|stop)
     category="turn_stop"
-    title="Codex 本轮已停下"
-    message="本轮回复/工具执行已经结束，可能是在等待你或等待后续观察窗口。"
     if [[ "$lower_last_message" == *"观察"* || "$lower_last_message" == *"观察窗口"* || "$lower_last_message" == *"继续观察"* || "$lower_last_message" == *"monitor"* || "$lower_last_message" == *"watch"* || "$lower_last_message" == *"稍后"* || "$lower_last_message" == *"分钟"* || "$lower_last_message" == *"有异常"* || "$lower_last_message" == *"加载中"* ]]; then
       category="observation"
       observation_event="true"
-      title="Codex 已进入观察窗口"
-      message="本轮已暂时停下，但任务可能还在观察/等待后续检查，并不代表最终完成。"
     fi
     sound_file="/System/Library/Sounds/Glass.aiff"
     sound_name="Glass"
     ;;
   PermissionRequest|permission|approval)
     category="permission"
-    title="Codex 正在等你确认权限"
-    message="需要在 Codex 或 VS Code 里批准/拒绝权限请求。"
     sound_file="/System/Library/Sounds/Hero.aiff"
     sound_name="Hero"
     ;;
   *)
-    title="Codex 提醒"
-    message="Codex 有状态需要你查看。"
     sound_file="/System/Library/Sounds/Glass.aiff"
     sound_name="Glass"
     ;;
 esac
 
+if [[ "$notification_locale" == "zh-CN" ]]; then
+  open_session_label="打开会话"
+  open_app_label="打开应用"
+  acknowledge_label="知道了"
+  case "$category" in
+    turn_stop)
+      title="Codex 本轮已停下"
+      message="本轮回复/工具执行已经结束，可能是在等待你或等待后续观察窗口。"
+      ;;
+    observation)
+      title="Codex 已进入观察窗口"
+      message="本轮已暂时停下，但任务可能还在观察/等待后续检查，并不代表最终完成。"
+      ;;
+    permission)
+      title="Codex 正在等待权限确认"
+      message="请在 Codex 或 VS Code 中批准或拒绝权限请求。"
+      ;;
+    *)
+      title="Codex 有一条新提醒"
+      message="Codex 需要你查看。"
+      ;;
+  esac
+else
+  open_session_label="Open session"
+  open_app_label="Open app"
+  acknowledge_label="OK"
+  case "$category" in
+    turn_stop)
+      title="Codex turn stopped"
+      message="The current reply or tool run ended and may be waiting for you or a later observation check."
+      ;;
+    observation)
+      title="Codex entered an observation window"
+      message="The turn paused, but the task may still be waiting for a later check and is not necessarily complete."
+      ;;
+    permission)
+      title="Codex needs permission"
+      message="Approve or reject the permission request in Codex or VS Code."
+      ;;
+    *)
+      title="Codex notification"
+      message="Codex needs your attention."
+      ;;
+  esac
+fi
+
 open_url=""
 fallback_url=""
 activate_bundle="com.openai.codex"
 fallback_bundle=""
-primary_button="打开会话"
+primary_button="$open_session_label"
 fallback_button=""
 lower_source="$(printf '%s' "$source_name" | /usr/bin/tr '[:upper:]' '[:lower:]')"
 open_workspace_first="$(config_get "routing.openWorkspaceFirst" "true")"
@@ -593,11 +664,11 @@ if [[ -n "$thread_id" ]]; then
     activate_bundle="com.openai.codex"
     fallback_bundle="com.microsoft.VSCode"
   fi
-  primary_button="打开会话"
+  primary_button="$open_session_label"
 elif [[ "$lower_source" == *"vscode"* || "$lower_source" == *"vs code"* ]]; then
   open_url="vscode://openai.chatgpt/"
   activate_bundle="com.microsoft.VSCode"
-  primary_button="打开会话"
+  primary_button="$open_session_label"
 fi
 
 icon_path="$(config_get "notifications.codexIconPath" "")"
@@ -751,7 +822,7 @@ if [[ "$event" == PermissionRequest || "$event" == permission || "$event" == app
   alert_timeout="30"
 fi
 
-/usr/bin/osascript - "$title" "$message" "$alert_timeout" "$icon_path" "$open_url" "$activate_bundle" "$cwd" "$primary_button" "$fallback_url" "$fallback_bundle" "$fallback_button" "$open_workspace_first" "$focus_vscode_window" <<'OSA' >/dev/null 2>&1 &
+/usr/bin/osascript - "$title" "$message" "$alert_timeout" "$icon_path" "$open_url" "$activate_bundle" "$cwd" "$primary_button" "$fallback_url" "$fallback_bundle" "$fallback_button" "$open_workspace_first" "$focus_vscode_window" "$open_app_label" "$acknowledge_label" <<'OSA' >/dev/null 2>&1 &
 on run argv
   set notificationTitle to item 1 of argv
   set notificationMessage to item 2 of argv
@@ -766,14 +837,16 @@ on run argv
   set fallbackButton to item 11 of argv
   set openWorkspaceFirst to item 12 of argv
   set focusVSCodeWindow to item 13 of argv
+  set openAppButton to item 14 of argv
+  set acknowledgeButton to item 15 of argv
 
-  if primaryButton is "" then set primaryButton to "打开应用"
+  if primaryButton is "" then set primaryButton to openAppButton
 
   try
     if fallbackButton is not "" then
-      set buttonList to {"知道了", fallbackButton, primaryButton}
+      set buttonList to {acknowledgeButton, fallbackButton, primaryButton}
     else
-      set buttonList to {"知道了", primaryButton}
+      set buttonList to {acknowledgeButton, primaryButton}
     end if
 
     if iconPath is not "" then

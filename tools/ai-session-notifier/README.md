@@ -17,6 +17,7 @@ workspace, and thread that produced the event.
 | Codex alerts | Notifies on `Stop` and `PermissionRequest`. |
 | Claude Code alerts | Notifies on permission and idle events. |
 | Kimi Code alerts | Notifies on turn stops, permission requests, failures, and completed background tasks. |
+| Notification language | Follows the system and supports English or Simplified Chinese across all adapters. |
 | Session return | Chooses Codex Desktop, VS Code, Claude Code, or the originating Kimi terminal host. |
 | Multi-window routing | Tries to raise the matching VS Code workspace before opening the thread link. |
 | Noise control | Deduplicates repeated alerts and identifies likely observation windows. |
@@ -258,6 +259,9 @@ Common settings:
 - `notifications.enabled`: enable desktop notifications.
 - `notifications.dialogs`: show the prominent macOS/Windows dialog.
 - `notifications.sound`: enable notification sounds.
+- `notifications.locale`: `auto` (default), `zh-CN`, or `en`. Automatic mode
+  uses Simplified Chinese for `zh`, `zh-CN`, `zh-Hans`, and `zh-SG` system
+  locales, and English otherwise.
 - `notifications.codexIconPath`, `notifications.claudeIconPath`, and
   `notifications.kimiIconPath`: override one tool's local icon.
 - `notifications.iconPath`: shared fallback icon override.
@@ -270,6 +274,9 @@ Common settings:
 - `debug.saveRawPayload`: explicitly opt in to the latest raw hook payload.
 - `routing.openWorkspaceFirst` and `routing.focusVSCodeWindow`: control
   best-effort VS Code routing.
+
+`AI_SESSION_NOTIFIER_LOCALE` overrides the configured language for one process
+or shell environment. For example, set it to `zh-CN` or `en`.
 
 Adapters apply cleanup at most once per day. The management command can run it
 on demand and migrates the older append-only `session-registry.jsonl` format to

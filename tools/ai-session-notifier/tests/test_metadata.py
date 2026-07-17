@@ -16,10 +16,10 @@ class MetadataTests(unittest.TestCase):
         claude = json.loads((TOOL_ROOT / "claude-code-plugin" / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
         kimi = json.loads((TOOL_ROOT / "kimi-code-plugin" / "kimi.plugin.json").read_text(encoding="utf-8"))
 
-        self.assertEqual(tool["version"], "0.5.0")
-        self.assertEqual(codex["version"].split("+")[0], "0.5.0")
-        self.assertEqual(claude["version"], "0.5.0")
-        self.assertEqual(kimi["version"], "0.5.0")
+        self.assertEqual(tool["version"], "0.5.1")
+        self.assertEqual(codex["version"].split("+")[0], "0.5.1")
+        self.assertEqual(claude["version"], "0.5.1")
+        self.assertEqual(kimi["version"], "0.5.1")
         self.assertEqual(tool["author"]["name"], "Dylon Cai")
 
     def test_codex_plugin_contains_current_management_commands(self) -> None:

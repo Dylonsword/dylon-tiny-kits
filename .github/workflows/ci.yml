@@ -39,6 +39,7 @@ jobs:
           $env:AI_SESSION_NOTIFIER_CONFIG_DIR = Join-Path $root "config"
           $env:AI_SESSION_NOTIFIER_DATA_DIR = Join-Path $root "data"
           $env:AI_SESSION_NOTIFIER_DRY_RUN = "1"
+          $env:AI_SESSION_NOTIFIER_LOCALE = "zh-CN"
           '{"hook_event_name":"Notification","notification_type":"permission_prompt","session_id":"windows-test","cwd":"C:\\work","last_assistant_message":"private"}' |
             & .\tools\ai-session-notifier\claude-code-plugin\bin\ai-session-notify.ps1
           '{"hook_event_name":"PermissionRequest","session_id":"kimi-windows-test","cwd":"C:\\work","message":"private"}' |
@@ -46,6 +47,7 @@ jobs:
           $events = Get-Content (Join-Path $root "data\events.jsonl") | ForEach-Object { $_ | ConvertFrom-Json }
           if ($events.Count -ne 2) { throw "Expected two events" }
           if (($events | Where-Object { $_.lastAssistantMessage -ne "" }).Count -ne 0) { throw "Message excerpts must be disabled by default" }
+          if (($events | Where-Object { $_.title -notmatch "权限" }).Count -ne 0) { throw "Simplified Chinese notification titles expected" }
           $registry = Get-Content (Join-Path $root "data\sessions.json") -Raw | ConvertFrom-Json
           if ($null -eq $registry.sessions.'claude-code:windows-test') { throw "Session route missing" }
           if ($null -eq $registry.sessions.'kimi-code:kimi-windows-test') { throw "Kimi session route missing" }

@@ -9,6 +9,10 @@ An idle prompt is not proof that a larger multi-step task is complete. See the
 [shared README](../README.md) for privacy defaults, storage, reporting, and
 cross-tool behavior.
 
+Notification titles, messages, buttons, and the workspace-return prompt follow
+the system language by default. Set shared `notifications.locale` or
+`AI_SESSION_NOTIFIER_LOCALE` to `zh-CN` or `en` to override it.
+
 ## Install
 
 Load directly for one session:

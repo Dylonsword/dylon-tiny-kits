@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 
-VERSION = "0.5.1"
+VERSION = "0.5.2"
 CONFIG_VERSION = 2
 MIN_KIMI_PLUGIN_HOOKS_VERSION = "0.20.1"
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -36,6 +36,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "noise": {
         "dedupeSeconds": 20,
         "observationMode": "notify",
+        "permissionMode": "smart",
     },
     "ledger": {
         "enabled": True,
@@ -538,6 +539,7 @@ def collect_status() -> dict[str, Any]:
         "paths": {key: str(value) for key, value in locations.items()},
         "configVersion": config.get("version"),
         "notificationsEnabled": bool(config_value(config, "notifications.enabled", True)),
+        "permissionNotificationMode": str(config_value(config, "noise.permissionMode", "smart")),
         "messageExcerptsEnabled": bool(config_value(config, "ledger.includeMessageExcerpt", False)),
         "debugPayloadEnabled": bool(config_value(config, "debug.saveRawPayload", False)),
         "events": len(events),
@@ -587,6 +589,7 @@ def print_status(status: dict[str, Any]) -> None:
             "on" if status["debugPayloadEnabled"] else "off",
         )
     )
+    print(f"Codex permission alerts: {status['permissionNotificationMode']}")
     print(
         "Codex: hook script {0}; events {1}".format(
             "installed" if codex["hookScriptInstalled"] else "not installed",
@@ -627,6 +630,14 @@ def doctor_checks(status: dict[str, Any]) -> list[dict[str, str]]:
         add("ok", "config", f"schema {CONFIG_VERSION} is valid")
     else:
         add("error", "config", f"expected schema {CONFIG_VERSION}, got {status['configVersion']}")
+    if status["permissionNotificationMode"] in {"smart", "notify", "quiet"}:
+        add("ok", "Codex permission alerts", status["permissionNotificationMode"])
+    else:
+        add(
+            "error",
+            "Codex permission alerts",
+            "noise.permissionMode must be smart, notify, or quiet",
+        )
     if status["dependencies"]["perl"]:
         add("ok", "perl", status["dependencies"]["perl"])
     elif os.name != "nt":

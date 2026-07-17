@@ -1,7 +1,7 @@
 {
   "name": "ai-session-notifier",
   "displayName": "AI Session Notifier",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "Privacy-first desktop notifications, best-effort session routing, and bounded local ledgers for Codex, Claude Code, and Kimi Code.",
   "author": {
     "name": "Dylon Cai",

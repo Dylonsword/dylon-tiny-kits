@@ -53,6 +53,7 @@ function Ensure-AppState {
       noise = @{
         dedupeSeconds = 20
         observationMode = "notify"
+        permissionMode = "smart"
       }
       ledger = @{
         enabled = $true

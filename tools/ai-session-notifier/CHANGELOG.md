@@ -2,6 +2,23 @@
 
 All notable changes to AI Session Notifier are documented here.
 
+## [0.5.2] - 2026-07-17
+
+### Added
+
+- Added `noise.permissionMode` with `smart`, `notify`, and `quiet` values plus
+  the `AI_SESSION_NOTIFIER_PERMISSION_MODE` environment override.
+- Added Codex effective reviewer detection from future hook payload fields or
+  the current task transcript's latest structured `approvals_reviewer` state.
+- Added approval reviewer/mode diagnostics to Codex ledger entries.
+
+### Changed
+
+- Suppress Codex permission UI only when automatic review or bypass mode is
+  confirmed; user-reviewed and unknown permission requests remain visible.
+- Keep Claude Code and Kimi Code permission notifications visible because their
+  configured events mean the tool is actually about to wait for a person.
+
 ## [0.5.1] - 2026-07-16
 
 ### Added

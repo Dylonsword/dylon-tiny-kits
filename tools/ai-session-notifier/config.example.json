@@ -13,7 +13,8 @@
   },
   "noise": {
     "dedupeSeconds": 20,
-    "observationMode": "notify"
+    "observationMode": "notify",
+    "permissionMode": "smart"
   },
   "notifications": {
     "claudeIconPath": "",

@@ -54,6 +54,121 @@ class HookTests(unittest.TestCase):
         path = self.root / "data" / "events.jsonl"
         return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
 
+    def write_codex_transcript(self, name: str, reviewer: str) -> Path:
+        path = self.root / "codex" / "sessions" / "2026" / "07" / "17" / f"{name}.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "timestamp": "2026-07-17T00:00:00Z",
+                    "type": "turn_context",
+                    "payload": {
+                        "approval_policy": "on-request",
+                        "approvals_reviewer": reviewer,
+                    },
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        return path
+
+    @unittest.skipUnless(shutil.which("zsh"), "Codex hook requires zsh")
+    def test_codex_smart_permission_mode_suppresses_only_automatic_review(self) -> None:
+        auto_transcript = self.write_codex_transcript("auto-review", "auto_review")
+        self.invoke(
+            CODEX_HOOK,
+            {
+                "hook_event_name": "PermissionRequest",
+                "threadId": "codex-auto-review",
+                "transcript_path": str(auto_transcript),
+                "permission_mode": "default",
+                "cwd": "/tmp/codex-auto-review",
+            },
+        )
+
+        manual_transcript = self.write_codex_transcript("manual-review", "user")
+        self.invoke(
+            CODEX_HOOK,
+            {
+                "hook_event_name": "PermissionRequest",
+                "threadId": "codex-manual-review",
+                "transcript_path": str(manual_transcript),
+                "permission_mode": "default",
+                "cwd": "/tmp/codex-manual-review",
+            },
+        )
+        self.invoke(
+            CODEX_HOOK,
+            {
+                "hook_event_name": "PermissionRequest",
+                "threadId": "codex-future-payload",
+                "approval_context": {"approvals_reviewer": "guardian_subagent"},
+                "permission_mode": "default",
+                "cwd": "/tmp/codex-future-payload",
+            },
+        )
+        self.invoke(
+            CODEX_HOOK,
+            {
+                "hook_event_name": "PermissionRequest",
+                "threadId": "codex-unknown-reviewer",
+                "permission_mode": "default",
+                "cwd": "/tmp/codex-unknown-reviewer",
+            },
+        )
+
+        events = {str(event["threadId"]): event for event in self.events()}
+        self.assertTrue(events["codex-auto-review"]["suppressed"])
+        self.assertEqual(
+            events["codex-auto-review"]["suppressionReason"],
+            "approval_reviewer:auto_review",
+        )
+        self.assertEqual(events["codex-auto-review"]["approvalReviewer"], "auto_review")
+        self.assertFalse(events["codex-manual-review"]["suppressed"])
+        self.assertTrue(events["codex-future-payload"]["suppressed"])
+        self.assertFalse(events["codex-unknown-reviewer"]["suppressed"])
+
+    @unittest.skipUnless(shutil.which("zsh"), "Codex hook requires zsh")
+    def test_codex_permission_notification_mode_can_override_smart_detection(self) -> None:
+        self.env["AI_SESSION_NOTIFIER_PERMISSION_MODE"] = "notify"
+        self.invoke(
+            CODEX_HOOK,
+            {
+                "hook_event_name": "PermissionRequest",
+                "threadId": "codex-notify-override",
+                "approvals_reviewer": "auto_review",
+                "permission_mode": "default",
+                "cwd": "/tmp/codex-notify-override",
+            },
+        )
+
+        event = self.events()[0]
+        self.assertFalse(event["suppressed"])
+
+    def test_claude_and_kimi_keep_real_auto_mode_permission_prompts_visible(self) -> None:
+        self.invoke(
+            CLAUDE_HOOK,
+            {
+                "hook_event_name": "Notification",
+                "notification_type": "permission_prompt",
+                "permission_mode": "auto",
+                "session_id": "claude-auto-fallback",
+                "cwd": "/tmp/claude-auto-fallback",
+            },
+        )
+        self.invoke(
+            KIMI_HOOK,
+            {
+                "hook_event_name": "PermissionRequest",
+                "permission_mode": "auto",
+                "session_id": "kimi-auto-fallback",
+                "cwd": "/tmp/kimi-auto-fallback",
+            },
+        )
+
+        self.assertTrue(all(not event["suppressed"] for event in self.events()))
+
     def test_adapters_write_private_redacted_events_and_compact_routes(self) -> None:
         if shutil.which("zsh"):
             self.invoke(

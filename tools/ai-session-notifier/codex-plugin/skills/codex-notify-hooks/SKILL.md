@@ -73,6 +73,15 @@ Do not suggest bypassing hook trust for normal interactive use.
 - Runtime config lives at `~/.config/ai-session-notifier/config.json`.
 - Message excerpts, raw payload snapshots, and debug logs are disabled by default.
 - Storage is automatically bounded by retention days and maximum bytes.
+- `noise.permissionMode` defaults to `smart`: confirmed Codex `auto_review`,
+  legacy `guardian_subagent`, and `bypassPermissions` permission events are
+  recorded without showing UI. User-reviewed and unknown requests still alert.
+- Current Codex hooks do not directly expose the effective reviewer. The
+  adapter checks a future payload field first, then reads only the latest
+  structured reviewer state from the current task transcript; it does not copy
+  transcript messages into notifier storage.
+- `noise.permissionMode` also accepts `notify` (always alert) and `quiet`
+  (always suppress); `AI_SESSION_NOTIFIER_PERMISSION_MODE` overrides it.
 - `routing.focusVSCodeWindow` enables a macOS System Events best-effort window
   raise for VS Code sessions before opening the thread deep link.
 - When `terminal-notifier` is available, notification clicks open the best available deep link:

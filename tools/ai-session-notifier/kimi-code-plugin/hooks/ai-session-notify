@@ -87,7 +87,8 @@ ensure_app_state() {
   },
   "noise": {
     "dedupeSeconds": 20,
-    "observationMode": "notify"
+    "observationMode": "notify",
+    "permissionMode": "smart"
   },
   "ledger": {
     "enabled": true,

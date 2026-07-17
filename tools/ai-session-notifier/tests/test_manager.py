@@ -53,6 +53,7 @@ class ManagerTests(unittest.TestCase):
         self.assertTrue(payload["changed"])
         self.assertEqual(config["version"], 2)
         self.assertEqual(config["notifications"]["locale"], "auto")
+        self.assertEqual(config["noise"]["permissionMode"], "smart")
         self.assertFalse(config["ledger"]["includeMessageExcerpt"])
         self.assertFalse(config["debug"]["saveRawPayload"])
         self.assertTrue(all("version" not in value for value in config.values() if isinstance(value, dict)))

@@ -182,6 +182,136 @@ extract_json_value() {
   ' 2>/dev/null || true
 }
 
+extract_top_level_json_value() {
+  local keys="$1"
+  if [[ -z "$input" ]]; then
+    return 0
+  fi
+
+  PAYLOAD="$input" KEYS="$keys" /usr/bin/perl -MJSON::PP -e '
+    my $data = eval { decode_json($ENV{PAYLOAD} // "") };
+    exit 0 if $@ || ref($data) ne "HASH";
+    for my $key (split /,/, ($ENV{KEYS} // "")) {
+      my $value = $data->{$key};
+      if (defined $value && !ref($value) && length "$value") {
+        print $value;
+        exit 0;
+      }
+    }
+  ' 2>/dev/null || true
+}
+
+extract_approval_reviewer_from_payload() {
+  if [[ -z "$input" ]]; then
+    return 0
+  fi
+
+  PAYLOAD="$input" /usr/bin/perl -MJSON::PP -e '
+    my $data = eval { decode_json($ENV{PAYLOAD} // "") };
+    exit 0 if $@ || ref($data) ne "HASH";
+    for my $key ("approvals_reviewer", "approvalsReviewer") {
+      my $value = $data->{$key};
+      if (defined $value && !ref($value) && length "$value") {
+        print $value;
+        exit 0;
+      }
+    }
+    for my $context_key ("approval_context", "approvalContext") {
+      my $context = $data->{$context_key};
+      next if ref($context) ne "HASH";
+      for my $key ("approvals_reviewer", "approvalsReviewer") {
+        my $value = $context->{$key};
+        if (defined $value && !ref($value) && length "$value") {
+          print $value;
+          exit 0;
+        }
+      }
+    }
+  ' 2>/dev/null || true
+}
+
+approval_reviewer_from_transcript() {
+  local transcript_path="$1"
+  if [[ -z "$transcript_path" || ! -f "$transcript_path" ]]; then
+    return 0
+  fi
+
+  TRANSCRIPT_PATH="$transcript_path" CODEX_HOME_PATH="$CODEX_HOME" /usr/bin/perl -MJSON::PP -MCwd=abs_path -MFcntl=SEEK_SET -e '
+    my $path = abs_path($ENV{TRANSCRIPT_PATH} // "");
+    exit 0 if !defined $path || !-f $path;
+
+    my @roots;
+    for my $suffix ("sessions", "archived_sessions") {
+      my $root = abs_path(($ENV{CODEX_HOME_PATH} // "") . "/" . $suffix);
+      push @roots, $root if defined $root;
+    }
+    my $allowed = 0;
+    for my $root (@roots) {
+      if ($path eq $root || index($path, $root . "/") == 0) {
+        $allowed = 1;
+        last;
+      }
+    }
+    exit 0 if !$allowed;
+
+    open my $fh, "<:raw", $path or exit 0;
+    my $position = -s $fh;
+    my $chunk_size = 65536;
+    my $max_scan = 64 * 1024 * 1024;
+    my $scanned = 0;
+    my $buffer = "";
+
+    sub reviewer_from_line {
+      my ($line) = @_;
+      return undef if !defined $line || !length $line;
+      my $data = eval { decode_json($line) };
+      return undef if $@ || ref($data) ne "HASH";
+      my $payload = $data->{payload};
+      return undef if ref($payload) ne "HASH";
+
+      if (($data->{type} // "") eq "turn_context") {
+        my $value = $payload->{approvals_reviewer};
+        return "$value" if defined $value && !ref($value) && length "$value";
+      }
+      if (($data->{type} // "") eq "event_msg"
+          && ($payload->{type} // "") eq "thread_settings_applied"
+          && ref($payload->{thread_settings}) eq "HASH") {
+        my $value = $payload->{thread_settings}->{approvals_reviewer};
+        return "$value" if defined $value && !ref($value) && length "$value";
+      }
+      return undef;
+    }
+
+    while ($position > 0 && $scanned < $max_scan) {
+      my $read_size = $position < $chunk_size ? $position : $chunk_size;
+      my $remaining = $max_scan - $scanned;
+      $read_size = $remaining if $read_size > $remaining;
+      $position -= $read_size;
+      seek($fh, $position, SEEK_SET) or last;
+      my $chunk = "";
+      my $read = read($fh, $chunk, $read_size);
+      last if !defined $read || $read <= 0;
+      $scanned += $read;
+      $buffer = $chunk . $buffer;
+
+      my @lines = split /\n/, $buffer, -1;
+      $buffer = shift @lines;
+      for my $line (reverse @lines) {
+        my $reviewer = reviewer_from_line($line);
+        if (defined $reviewer) {
+          print $reviewer;
+          close $fh;
+          exit 0;
+        }
+      }
+    }
+
+    my $reviewer = reviewer_from_line($buffer);
+    print $reviewer if defined $reviewer;
+    close $fh;
+  ' 2>/dev/null || true
+}
+
 url_escape() {
   /usr/bin/perl -MURI::Escape -e 'print uri_escape($ARGV[0]);' "$1" 2>/dev/null || printf '%s' "$1"
 }
@@ -215,7 +345,8 @@ ensure_app_state() {
   },
   "noise": {
     "dedupeSeconds": 20,
-    "observationMode": "notify"
+    "observationMode": "notify",
+    "permissionMode": "smart"
   },
   "ledger": {
     "enabled": true,
@@ -366,6 +497,8 @@ write_shared_ledger() {
   AS_TITLE="$title" \
   AS_MESSAGE="$message" \
   AS_LAST_MESSAGE="${last_message:-}" \
+  AS_APPROVAL_REVIEWER="${approval_reviewer:-}" \
+  AS_PERMISSION_MODE="${permission_mode:-}" \
   AS_SUPPRESSED="$suppressed" \
   AS_SUPPRESSION_REASON="$suppression_reason" \
   AS_MAX_MESSAGE_CHARS="$max_message_chars" \
@@ -397,6 +530,8 @@ write_shared_ledger() {
       title => env_text("AS_TITLE"),
       message => env_text("AS_MESSAGE"),
       lastAssistantMessage => $last,
+      approvalReviewer => env_text("AS_APPROVAL_REVIEWER"),
+      permissionMode => env_text("AS_PERMISSION_MODE"),
       suppressed => (($ENV{AS_SUPPRESSED} // "") eq "true" ? JSON::PP::true : JSON::PP::false),
       suppressionReason => env_text("AS_SUPPRESSION_REASON"),
     };
@@ -529,6 +664,9 @@ thread_id="$(extract_json_value "thread_id,threadId,session_id,sessionId,convers
 source_name="$(extract_json_value "originator,app,client,source,thread_source,threadSource")"
 cwd="$(extract_json_value "cwd,current_working_directory,working_directory,workingDirectory")"
 last_message="$(extract_json_value "last_assistant_message,lastAssistantMessage")"
+transcript_path="$(extract_top_level_json_value "transcript_path,transcriptPath,rollout_path,rolloutPath")"
+permission_mode="$(extract_top_level_json_value "permission_mode,permissionMode")"
+approval_reviewer="$(extract_approval_reviewer_from_payload)"
 lower_last_message="$(printf '%s' "$last_message" | /usr/bin/tr '[:upper:]' '[:lower:]')"
 
 save_raw_payload="$(config_get "debug.saveRawPayload" "false")"
@@ -539,10 +677,13 @@ if [[ -n "$input" ]] && flag_enabled "$save_raw_payload"; then
   /bin/chmod 600 "$APP_DEBUG_PAYLOAD_FILE" >/dev/null 2>&1 || true
 fi
 
-if [[ -n "$thread_id" && -z "$source_name" && -d "$CODEX_HOME/sessions" ]]; then
+rollout_path="$transcript_path"
+if [[ -z "$rollout_path" && -n "$thread_id" && -d "$CODEX_HOME/sessions" ]]; then
   rollout_path="$(/usr/bin/find "$CODEX_HOME/sessions" -name "*${thread_id}.jsonl" -print -quit 2>/dev/null)"
-  if [[ -n "$rollout_path" ]]; then
-    first_line="$(/usr/bin/head -n 1 "$rollout_path" 2>/dev/null || true)"
+fi
+if [[ -n "$rollout_path" && -z "$source_name" ]]; then
+  first_line="$(/usr/bin/head -n 1 "$rollout_path" 2>/dev/null || true)"
+  if [[ -n "$first_line" ]]; then
     source_name="$(PAYLOAD="$first_line" KEYS="originator,app,client,source,thread_source,threadSource" /usr/bin/perl -MJSON::PP -e '
       my $data = eval { decode_json($ENV{PAYLOAD} // "") };
       exit 0 if $@ || ref($data) ne "HASH";
@@ -567,6 +708,13 @@ if [[ -n "$thread_id" && -z "$source_name" && -d "$CODEX_HOME/sessions" ]]; then
       ' 2>/dev/null || true)"
     fi
   fi
+fi
+
+if [[ -z "$transcript_path" && -n "$rollout_path" ]]; then
+  transcript_path="$rollout_path"
+fi
+if [[ -z "$approval_reviewer" && -n "$transcript_path" ]]; then
+  approval_reviewer="$(approval_reviewer_from_transcript "$transcript_path")"
 fi
 
 category="attention"
@@ -712,6 +860,10 @@ sound_enabled="$(config_get "notifications.sound" "true")"
 ignore_dnd_enabled="$(config_get "notifications.ignoreDnD" "true")"
 dedupe_seconds="$(config_get "noise.dedupeSeconds" "20")"
 observation_mode="$(config_get "noise.observationMode" "notify")"
+permission_notification_mode="${AI_SESSION_NOTIFIER_PERMISSION_MODE:-$(config_get "noise.permissionMode" "smart")}"
+permission_notification_mode="$(printf '%s' "$permission_notification_mode" | /usr/bin/tr '[:upper:]' '[:lower:]')"
+normalized_approval_reviewer="$(printf '%s' "$approval_reviewer" | /usr/bin/tr '[:upper:]' '[:lower:]')"
+normalized_permission_mode="$(printf '%s' "$permission_mode" | /usr/bin/tr '[:upper:]' '[:lower:]')"
 ledger_enabled="$(config_get "ledger.enabled" "true")"
 include_message_excerpt="$(config_get "ledger.includeMessageExcerpt" "false")"
 max_message_chars="$(config_get "ledger.maxMessageChars" "260")"
@@ -725,6 +877,17 @@ if ! flag_enabled "$notifications_enabled"; then
 elif [[ "$observation_event" == "true" && "$observation_mode" == "quiet" ]]; then
   suppressed="true"
   suppression_reason="observation_quiet"
+elif [[ "$category" == "permission" && "$permission_notification_mode" == "quiet" ]]; then
+  suppressed="true"
+  suppression_reason="permission_quiet"
+elif [[ "$category" == "permission" && "$permission_notification_mode" == "smart" ]]; then
+  if [[ "$normalized_approval_reviewer" == "auto_review" || "$normalized_approval_reviewer" == "guardian_subagent" ]]; then
+    suppressed="true"
+    suppression_reason="approval_reviewer:${normalized_approval_reviewer}"
+  elif [[ "$normalized_permission_mode" == "bypasspermissions" ]]; then
+    suppressed="true"
+    suppression_reason="permission_mode:bypassPermissions"
+  fi
 fi
 
 if [[ "$suppressed" != "true" ]]; then

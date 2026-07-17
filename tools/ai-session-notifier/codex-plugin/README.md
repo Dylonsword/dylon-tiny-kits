@@ -10,6 +10,15 @@ finished. A small heuristic labels messages that mention monitoring/loading as
 `Codex 已进入观察窗口`. Set `noise.observationMode` to `quiet` to record those
 events without showing a desktop notification.
 
+Permission alerts use `noise.permissionMode: smart` by default. Current Codex
+hook payloads do not directly expose whether the effective reviewer is the user
+or automatic review, so the adapter falls back to the current task transcript's
+latest structured `approvals_reviewer` value. It suppresses only confirmed
+`auto_review`/`guardian_subagent` or `bypassPermissions` events. Unknown and
+user-reviewed requests remain visible. Use `notify` to always alert or `quiet`
+to silence all Codex permission events. Transcript message bodies are never
+copied into notifier state.
+
 See the [shared AI Session Notifier README](../README.md) for privacy, storage,
 configuration, platform support, and complete removal.
 
@@ -73,6 +82,8 @@ Default paths:
 Assistant-message excerpts, raw payload snapshots, and debug logs are disabled
 by default. To troubleshoot, explicitly enable `debug.logEnabled` or
 `debug.saveRawPayload`, reproduce once, and disable it again afterward.
+Suppressed automatic-review events remain in `events.jsonl` with
+`approvalReviewer`, `permissionMode`, and `suppressionReason` fields.
 
 ## Uninstall
 

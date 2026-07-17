@@ -20,13 +20,39 @@ workspace, and thread that produced the event.
 | Notification language | Follows the system and supports English or Simplified Chinese across all adapters. |
 | Session return | Chooses Codex Desktop, VS Code, Claude Code, or the originating Kimi terminal host. |
 | Multi-window routing | Tries to raise the matching VS Code workspace before opening the thread link. |
-| Noise control | Deduplicates repeated alerts and identifies likely observation windows. |
+| Noise control | Deduplicates alerts, identifies observation windows, and silences Codex requests handled by automatic review. |
 | Local history | Keeps a bounded event ledger and only the latest route for each session. |
 | Operations | Provides status, diagnostics, cleanup, dry-run tests, and reports. |
 
 A Codex or Kimi Code `Stop` event means the current turn stopped. It does
 **not** prove that a larger task or goal is complete. Likewise, a Claude Code
 `idle_prompt` only means that the current session is waiting.
+
+## Approval Noise Control
+
+`noise.permissionMode` defaults to `smart`. Current Codex `PermissionRequest`
+payloads do not directly distinguish user review from automatic review. The
+adapter first checks any reviewer field supplied by newer hook payloads; when
+that field is absent, it searches backward in the current task's local
+transcript for the latest structured `approvals_reviewer` state.
+
+- `auto_review`, the legacy `guardian_subagent` value, and
+  `bypassPermissions` are recorded without a dialog, banner, or sound.
+- `user`, unknown values, and unreadable state continue to notify so a real
+  blocked approval is not missed.
+- Transcript message bodies are not retained. The ledger stores only the
+  reviewer/mode enum and suppression reason.
+
+Set `noise.permissionMode` to `notify` to show every Codex permission alert or
+`quiet` to silence all Codex permission alerts. The
+`AI_SESSION_NOTIFIER_PERMISSION_MODE` environment variable temporarily
+overrides the setting.
+
+Claude Code `Notification: permission_prompt` and Kimi Code
+`PermissionRequest` events mean that the tool is about to wait for a person.
+Their automatic modes normally do not emit these alerts; an event that does
+appear during an automatic mode is a real fallback, so those adapters
+deliberately keep it visible.
 
 ## Install
 
@@ -268,6 +294,8 @@ Common settings:
 - `noise.dedupeSeconds`: suppress repeated equivalent events.
 - `noise.observationMode`: `notify` or `quiet` for likely Codex observation
   windows.
+- `noise.permissionMode`: `smart` (default), `notify`, or `quiet` for Codex
+  permission alerts.
 - `ledger.includeMessageExcerpt`: explicitly opt in to short assistant-message
   excerpts.
 - `ledger.retentionDays` and `ledger.maxBytes`: local storage limits.
@@ -275,8 +303,8 @@ Common settings:
 - `routing.openWorkspaceFirst` and `routing.focusVSCodeWindow`: control
   best-effort VS Code routing.
 
-`AI_SESSION_NOTIFIER_LOCALE` overrides the configured language for one process
-or shell environment. For example, set it to `zh-CN` or `en`.
+`AI_SESSION_NOTIFIER_LOCALE` and `AI_SESSION_NOTIFIER_PERMISSION_MODE` override
+their configured values for one process or shell environment.
 
 Adapters apply cleanup at most once per day. The management command can run it
 on demand and migrates the older append-only `session-registry.jsonl` format to

@@ -12,7 +12,7 @@ if command -v zsh >/dev/null 2>&1; then
   zsh -n "$tool_root/scripts/uninstall.sh"
   zsh -n "$tool_root/codex-plugin/scripts/install.sh"
   zsh -n "$tool_root/codex-plugin/scripts/uninstall.sh"
-  zsh -n "$tool_root/codex-plugin/scripts/codex-notify.sh"
+  zsh +o bgnice -n "$tool_root/codex-plugin/scripts/codex-notify.sh"
 fi
 
 python3 -m unittest discover -s "$tool_root/tests" -p 'test_*.py' -v

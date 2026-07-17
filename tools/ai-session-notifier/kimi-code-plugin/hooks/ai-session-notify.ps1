@@ -112,10 +112,10 @@ function Resolve-NotificationLocale {
     [string](Get-ConfigValue "notifications.locale" "auto")
   }
   if (-not [string]::IsNullOrWhiteSpace($configured) -and $configured.ToLowerInvariant() -ne "auto") {
-    return ConvertTo-NotificationLocale $configured
+    return (ConvertTo-NotificationLocale $configured)
   }
   try {
-    return ConvertTo-NotificationLocale ([System.Globalization.CultureInfo]::CurrentUICulture.Name)
+    return (ConvertTo-NotificationLocale ([System.Globalization.CultureInfo]::CurrentUICulture.Name))
   } catch {
     return "en"
   }

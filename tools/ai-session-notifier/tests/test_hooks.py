@@ -228,6 +228,7 @@ class HookTests(unittest.TestCase):
         self.assertIn("UserPromptSubmit", removed["hooks"])
         self.assertNotIn("PermissionRequest", removed["hooks"])
 
+    @unittest.skipUnless(shutil.which("zsh"), "Unified installer requires zsh")
     def test_install_dry_run_does_not_write(self) -> None:
         result = subprocess.run(
             [str(INSTALLER), "--codex", "--dry-run"],

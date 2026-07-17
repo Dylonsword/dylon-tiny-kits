@@ -41,9 +41,9 @@ jobs:
           $env:AI_SESSION_NOTIFIER_DRY_RUN = "1"
           $env:AI_SESSION_NOTIFIER_LOCALE = "zh-CN"
           '{"hook_event_name":"Notification","notification_type":"permission_prompt","session_id":"windows-test","cwd":"C:\\work","last_assistant_message":"private"}' |
-            & .\tools\ai-session-notifier\claude-code-plugin\bin\ai-session-notify.ps1
+            pwsh -NoLogo -NoProfile -File .\tools\ai-session-notifier\claude-code-plugin\bin\ai-session-notify.ps1
           '{"hook_event_name":"PermissionRequest","session_id":"kimi-windows-test","cwd":"C:\\work","message":"private"}' |
-            & .\tools\ai-session-notifier\kimi-code-plugin\hooks\ai-session-notify.ps1
+            pwsh -NoLogo -NoProfile -File .\tools\ai-session-notifier\kimi-code-plugin\hooks\ai-session-notify.ps1
           $events = Get-Content (Join-Path $root "data\events.jsonl") | ForEach-Object { $_ | ConvertFrom-Json }
           if ($events.Count -ne 2) { throw "Expected two events" }
           if (($events | Where-Object { $_.lastAssistantMessage -ne "" }).Count -ne 0) { throw "Message excerpts must be disabled by default" }

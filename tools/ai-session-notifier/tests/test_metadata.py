@@ -72,6 +72,7 @@ class MetadataTests(unittest.TestCase):
         required = [
             REPO_ROOT / "LICENSE",
             REPO_ROOT / "SECURITY.md",
+            REPO_ROOT / "README.en.md",
             TOOL_ROOT / "CHANGELOG.md",
             REPO_ROOT / "README.zh-CN.md",
             TOOL_ROOT / "README.zh-CN.md",

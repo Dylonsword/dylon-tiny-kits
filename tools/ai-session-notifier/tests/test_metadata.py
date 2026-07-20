@@ -16,10 +16,10 @@ class MetadataTests(unittest.TestCase):
         claude = json.loads((TOOL_ROOT / "claude-code-plugin" / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
         kimi = json.loads((TOOL_ROOT / "kimi-code-plugin" / "kimi.plugin.json").read_text(encoding="utf-8"))
 
-        self.assertEqual(tool["version"], "0.5.3")
-        self.assertEqual(codex["version"].split("+")[0], "0.5.3")
-        self.assertEqual(claude["version"], "0.5.3")
-        self.assertEqual(kimi["version"], "0.5.3")
+        self.assertEqual(tool["version"], "0.5.4")
+        self.assertEqual(codex["version"].split("+")[0], "0.5.4")
+        self.assertEqual(claude["version"], "0.5.4")
+        self.assertEqual(kimi["version"], "0.5.4")
         self.assertEqual(tool["author"]["name"], "Dylon Cai")
 
     def test_codex_plugin_contains_current_management_commands(self) -> None:
@@ -70,6 +70,7 @@ class MetadataTests(unittest.TestCase):
 
         self.assertIn('set -- "$@" -execute "$execute_command"', script)
         self.assertIn('set callbackCommand to quoted form of callbackPath & " --open-target "', script)
+        self.assertIn('do shell script (callbackCommand & " >/dev/null 2>&1 &")', script)
         self.assertIn("Visual Studio Code.app/Contents/Resources/app/bin/code", script)
         self.assertIn('do shell script "open -b "', script)
         self.assertIn('attribute "AXMain"', script)

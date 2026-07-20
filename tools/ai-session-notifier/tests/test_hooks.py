@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -355,14 +356,19 @@ class HookTests(unittest.TestCase):
         if additions_probe.returncode != 0:
             self.skipTest("Standard Additions are unavailable in this sandbox")
 
-        result = subprocess.run(
-            [str(KIMI_HOOK), "--open-target", "", "", "false", "true"],
-            env=self.env,
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-        self.assertEqual(result.returncode, 0, result.stderr)
+        script = KIMI_HOOK.read_text(encoding="utf-8")
+        blocks = re.findall(r"<<'OSA'[^\n]*\n(.*?)\nOSA", script, flags=re.DOTALL)
+        self.assertEqual(len(blocks), 2)
+        for index, block in enumerate(blocks):
+            result = subprocess.run(
+                ["/usr/bin/osacompile", "-o", str(self.root / f"kimi-{index}.scpt")],
+                input=block,
+                env=self.env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_concurrent_claude_events_remain_valid_jsonl(self) -> None:
         def send(index: int) -> None:

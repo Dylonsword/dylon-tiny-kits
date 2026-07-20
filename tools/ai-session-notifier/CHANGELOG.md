@@ -2,6 +2,15 @@
 
 All notable changes to AI Session Notifier are documented here.
 
+## [0.5.4] - 2026-07-20
+
+### Fixed
+
+- Close the Kimi Code macOS dialog immediately after its open button is
+  pressed by launching the workspace callback in the background.
+- Prevent a slow VS Code workspace switch from making a successful click look
+  unresponsive and inviting duplicate clicks.
+
 ## [0.5.3] - 2026-07-19
 
 ### Fixed

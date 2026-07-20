@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 
-VERSION = "0.5.3"
+VERSION = "0.5.4"
 CONFIG_VERSION = 2
 MIN_KIMI_PLUGIN_HOOKS_VERSION = "0.20.1"
 DEFAULT_CONFIG: dict[str, Any] = {

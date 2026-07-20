@@ -1,6 +1,6 @@
 {
   "name": "codex-notify-hooks",
-  "version": "0.5.3",
+  "version": "0.5.4",
   "description": "Install privacy-first macOS Codex notifications with permission prompts and best-effort session routing.",
   "author": {
     "name": "Dylon Cai",

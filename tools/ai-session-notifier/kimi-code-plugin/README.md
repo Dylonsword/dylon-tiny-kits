@@ -65,6 +65,10 @@ workspace window. If that CLI is unavailable, it falls back to the previous
 their originating terminal. Windows uses a similar title match across VS Code
 and common terminal applications.
 
+The prominent macOS dialog starts this callback in the background, so the
+dialog closes as soon as the open button is pressed while VS Code finishes the
+window switch.
+
 Kimi Code currently has no documented session deep link. The adapter can
 therefore target the correct workspace window, but it cannot guarantee exact
 selection between multiple Kimi history entries inside that same workspace.

@@ -805,7 +805,7 @@ on run argv
 
     if bundleId is not "" and gave up of dialogResult is false and button returned of dialogResult is openButton then
       set callbackCommand to quoted form of callbackPath & " --open-target " & quoted form of bundleId & " " & quoted form of cwdPath & " " & quoted form of openWorkspaceFirst & " " & quoted form of focusVSCodeWindow
-      do shell script callbackCommand
+      do shell script (callbackCommand & " >/dev/null 2>&1 &")
     end if
   end try
 end run

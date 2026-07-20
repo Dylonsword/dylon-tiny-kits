@@ -1,6 +1,6 @@
 {
   "name": "ai-session-notifier",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "description": "Show privacy-first desktop alerts when Kimi Code stops, fails, completes a background task, or needs permission.",
   "keywords": [
     "notifications",

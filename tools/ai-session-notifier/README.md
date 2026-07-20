@@ -246,8 +246,10 @@ For a VS Code Codex session on macOS, the opener:
 Codex Desktop uses `codex://threads/<thread_id>`. Claude Code uses its
 `claude-cli://open` directory link. Windows includes a title-matching/user32
 VS Code opener in the Claude adapter. Kimi Code has no documented session deep
-link, so its adapter activates the originating terminal or VS Code app and
-tries to raise a window matching the workspace title.
+link, so its macOS adapter routes both notification clicks and dialog actions
+through the saved workspace using VS Code's bundled CLI, with `AXRaise` and
+`AXMain` title matching as fallback. It cannot guarantee selection between
+multiple Kimi history entries inside that same workspace.
 
 Routing is deliberately best effort. VS Code and host applications do not
 expose a stable public deep-link parameter for selecting an exact existing

@@ -16,10 +16,10 @@ class MetadataTests(unittest.TestCase):
         claude = json.loads((TOOL_ROOT / "claude-code-plugin" / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
         kimi = json.loads((TOOL_ROOT / "kimi-code-plugin" / "kimi.plugin.json").read_text(encoding="utf-8"))
 
-        self.assertEqual(tool["version"], "0.5.2")
-        self.assertEqual(codex["version"].split("+")[0], "0.5.2")
-        self.assertEqual(claude["version"], "0.5.2")
-        self.assertEqual(kimi["version"], "0.5.2")
+        self.assertEqual(tool["version"], "0.5.3")
+        self.assertEqual(codex["version"].split("+")[0], "0.5.3")
+        self.assertEqual(claude["version"], "0.5.3")
+        self.assertEqual(kimi["version"], "0.5.3")
         self.assertEqual(tool["author"]["name"], "Dylon Cai")
 
     def test_codex_plugin_contains_current_management_commands(self) -> None:
@@ -62,6 +62,17 @@ class MetadataTests(unittest.TestCase):
         notification = next(item for item in hooks if item["event"] == "Notification")
         self.assertEqual(notification["matcher"], r"task\.completed")
         self.assertTrue(all(item["command"] == "./hooks/ai-session-notify" for item in hooks))
+
+    def test_kimi_macos_clicks_use_workspace_callback(self) -> None:
+        script = (TOOL_ROOT / "kimi-code-plugin" / "hooks" / "ai-session-notify").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('set -- "$@" -execute "$execute_command"', script)
+        self.assertIn('set callbackCommand to quoted form of callbackPath & " --open-target "', script)
+        self.assertIn("Visual Studio Code.app/Contents/Resources/app/bin/code", script)
+        self.assertIn('do shell script "open -b "', script)
+        self.assertIn('attribute "AXMain"', script)
 
     def test_json_metadata_is_valid(self) -> None:
         for path in REPO_ROOT.rglob("*.json"):

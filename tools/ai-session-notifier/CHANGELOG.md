@@ -2,6 +2,21 @@
 
 All notable changes to AI Session Notifier are documented here.
 
+## [0.5.3] - 2026-07-19
+
+### Fixed
+
+- Route Kimi Code macOS system-banner clicks and dialog actions through the
+  saved VS Code workspace instead of activating the app's main window only.
+- Send the full saved workspace path through VS Code's bundled CLI so the
+  editor can choose the existing window, retaining `AXRaise` and `AXMain` as a
+  fallback when the CLI is unavailable.
+
+### Changed
+
+- Clarified that Kimi Code can target a workspace window but, without a public
+  session deep link, cannot select between history entries in that workspace.
+
 ## [0.5.2] - 2026-07-17
 
 ### Added

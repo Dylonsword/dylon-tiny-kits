@@ -1,6 +1,6 @@
 {
   "name": "ai-session-notifier",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "description": "Show privacy-first desktop notifications and reopen related workspaces when Claude Code waits for input or permission.",
   "author": {
     "name": "Dylon Cai",

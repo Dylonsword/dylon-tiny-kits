@@ -4,6 +4,7 @@ umask 077
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 plugin_root=$(CDPATH= cd -- "$script_dir/.." && pwd)
+script_path="$script_dir/ai-session-notify"
 
 case "$(uname -s 2>/dev/null || printf unknown)" in
   MINGW*|MSYS*|CYGWIN*)
@@ -17,6 +18,163 @@ case "$(uname -s 2>/dev/null || printf unknown)" in
     fi
     ;;
 esac
+
+shell_quote_args() {
+  /usr/bin/perl -e '
+    my $quote = chr(39);
+    my $replacement = $quote . chr(92) . $quote . $quote;
+    my @quoted;
+    for my $value (@ARGV) {
+      $value =~ s/\Q$quote\E/$replacement/g;
+      push @quoted, $quote . $value . $quote;
+    }
+    print join(" ", @quoted);
+  ' "$@" 2>/dev/null || true
+}
+
+find_vscode_cli() {
+  bundle_id=${1:-}
+  case "$bundle_id" in
+    com.microsoft.VSCodeInsiders)
+      for candidate in \
+        "/Applications/Visual Studio Code - Insiders.app/Contents/Resources/app/bin/code" \
+        "$HOME/Applications/Visual Studio Code - Insiders.app/Contents/Resources/app/bin/code"; do
+        if [ -x "$candidate" ]; then
+          printf '%s\n' "$candidate"
+          return 0
+        fi
+      done
+      command -v code-insiders 2>/dev/null || return 1
+      ;;
+    *)
+      for candidate in \
+        "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code" \
+        "$HOME/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code"; do
+        if [ -x "$candidate" ]; then
+          printf '%s\n' "$candidate"
+          return 0
+        fi
+      done
+      command -v code 2>/dev/null || return 1
+      ;;
+  esac
+}
+
+open_target_from_cli() {
+  target_bundle=${1:-}
+  target_cwd=${2:-}
+  open_workspace=${3:-true}
+  focus_vscode=${4:-true}
+  vscode_cli=$(find_vscode_cli "$target_bundle" || true)
+
+  /usr/bin/osascript - "$target_bundle" "$target_cwd" "$open_workspace" "$focus_vscode" "$vscode_cli" <<'OSA' >/dev/null
+on run argv
+  set bundleId to item 1 of argv
+  set cwdPath to item 2 of argv
+  set openWorkspaceFirst to item 3 of argv
+  set focusVSCodeWindow to item 4 of argv
+  set vscodeCliPath to item 5 of argv
+
+  my openTarget(bundleId, cwdPath, openWorkspaceFirst, focusVSCodeWindow, vscodeCliPath)
+end run
+
+on openTarget(bundleId, cwdPath, openWorkspaceFirst, focusVSCodeWindow, vscodeCliPath)
+  if (my isVSCodeBundle(bundleId)) and (cwdPath is not "") and (cwdPath is not "unknown") then
+    if openWorkspaceFirst is not "false" and vscodeCliPath is not "" then
+      try
+        do shell script quoted form of vscodeCliPath & " " & quoted form of cwdPath
+        delay 0.6
+        return true
+      end try
+    end if
+
+    set matchedWindow to false
+    if focusVSCodeWindow is not "false" then
+      set matchedWindow to my focusVSCodeWindowByPath(bundleId, cwdPath)
+    end if
+
+    if openWorkspaceFirst is not "false" then
+      try
+        do shell script "open -b " & quoted form of bundleId & " " & quoted form of cwdPath
+      end try
+      delay 0.35
+    end if
+
+    if focusVSCodeWindow is not "false" then
+      if my focusVSCodeWindowByPath(bundleId, cwdPath) then set matchedWindow to true
+    end if
+
+    if matchedWindow is false then
+      try
+        tell application id bundleId to activate
+      end try
+    end if
+  else if bundleId is not "" then
+    try
+      tell application id bundleId to activate
+    end try
+  end if
+end openTarget
+
+on isVSCodeBundle(bundleId)
+  return bundleId is "com.microsoft.VSCode" or bundleId is "com.microsoft.VSCodeInsiders"
+end isVSCodeBundle
+
+on focusVSCodeWindowByPath(bundleId, cwdPath)
+  set workspaceName to ""
+  set parentName to ""
+  try
+    set workspaceName to do shell script "/usr/bin/basename " & quoted form of cwdPath
+  end try
+  try
+    set parentPath to do shell script "/usr/bin/dirname " & quoted form of cwdPath
+    set parentName to do shell script "/usr/bin/basename " & quoted form of parentPath
+  end try
+
+  try
+    tell application "System Events"
+      set codeProcesses to application processes whose bundle identifier is bundleId
+      if (count of codeProcesses) is 0 and bundleId is "com.microsoft.VSCode" then
+        set codeProcesses to application processes whose name is "Code"
+      end if
+      repeat with codeProcess in codeProcesses
+        repeat with candidateWindow in windows of codeProcess
+          set windowTitle to ""
+          try
+            set windowTitle to name of candidateWindow as text
+          end try
+          if my titleMatches(windowTitle, cwdPath, workspaceName, parentName) then
+            set frontmost of codeProcess to true
+            try
+              perform action "AXRaise" of candidateWindow
+            end try
+            try
+              set value of attribute "AXMain" of candidateWindow to true
+            end try
+            return true
+          end if
+        end repeat
+      end repeat
+    end tell
+  end try
+  return false
+end focusVSCodeWindowByPath
+
+on titleMatches(windowTitle, cwdPath, workspaceName, parentName)
+  if windowTitle is "" then return false
+  if cwdPath is not "" and windowTitle contains cwdPath then return true
+  if workspaceName is not "" and windowTitle contains workspaceName then return true
+  if parentName is not "" and windowTitle contains parentName then return true
+  return false
+end titleMatches
+OSA
+}
+
+if [ "${1:-}" = "--open-target" ]; then
+  shift
+  open_target_from_cli "$@"
+  exit 0
+fi
 
 payload=$(cat 2>/dev/null || true)
 app_config_dir="${AI_SESSION_NOTIFIER_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/ai-session-notifier}"
@@ -538,6 +696,8 @@ ledger_enabled=$(config_get "ledger.enabled" "true")
 include_message_excerpt=$(config_get "ledger.includeMessageExcerpt" "false")
 max_message_chars=$(config_get "ledger.maxMessageChars" "260")
 debug_log_enabled=$(config_get "debug.logEnabled" "false")
+open_workspace_first=$(config_get "routing.openWorkspaceFirst" "true")
+focus_vscode_window=$(config_get "routing.focusVSCodeWindow" "true")
 suppressed=false
 suppression_reason=
 
@@ -580,7 +740,21 @@ case "$(uname -s 2>/dev/null || printf unknown)" in
         set -- "$@" -appIcon "$icon_path"
       fi
       if [ -n "$activate_bundle" ]; then
-        set -- "$@" -activate "$activate_bundle"
+        case "$activate_bundle" in
+          com.microsoft.VSCode|com.microsoft.VSCodeInsiders)
+            if [ -n "$cwd" ] && [ "$cwd" != "unknown" ]; then
+              execute_command=$(shell_quote_args "$script_path" "--open-target" "$activate_bundle" "$cwd" "$open_workspace_first" "$focus_vscode_window")
+              if [ -n "$execute_command" ]; then
+                set -- "$@" -execute "$execute_command"
+              else
+                set -- "$@" -activate "$activate_bundle"
+              fi
+            else
+              set -- "$@" -activate "$activate_bundle"
+            fi
+            ;;
+          *) set -- "$@" -activate "$activate_bundle" ;;
+        esac
       fi
       "$notifier" "$@" >/dev/null 2>&1 || true
     else
@@ -601,7 +775,7 @@ case "$(uname -s 2>/dev/null || printf unknown)" in
     elif [ "$event_name" = "StopFailure" ]; then
       alert_timeout=12
     fi
-    osascript - "$title" "$message" "$alert_timeout" "$icon_path" "$activate_bundle" "$cwd" "$open_button_label" "$ok_button_label" "$dismiss_button_label" <<'OSA' >/dev/null 2>&1 &
+    osascript - "$title" "$message" "$alert_timeout" "$icon_path" "$activate_bundle" "$cwd" "$script_path" "$open_workspace_first" "$focus_vscode_window" "$open_button_label" "$ok_button_label" "$dismiss_button_label" <<'OSA' >/dev/null 2>&1 &
 on run argv
   set notificationTitle to item 1 of argv
   set notificationMessage to item 2 of argv
@@ -609,9 +783,12 @@ on run argv
   set iconPath to item 4 of argv
   set bundleId to item 5 of argv
   set cwdPath to item 6 of argv
-  set openButtonLabel to item 7 of argv
-  set okButtonLabel to item 8 of argv
-  set dismissButtonLabel to item 9 of argv
+  set callbackPath to item 7 of argv
+  set openWorkspaceFirst to item 8 of argv
+  set focusVSCodeWindow to item 9 of argv
+  set openButtonLabel to item 10 of argv
+  set okButtonLabel to item 11 of argv
+  set dismissButtonLabel to item 12 of argv
 
   if bundleId is not "" then
     set openButton to openButtonLabel
@@ -627,44 +804,11 @@ on run argv
     end if
 
     if bundleId is not "" and gave up of dialogResult is false and button returned of dialogResult is openButton then
-      my focusTarget(bundleId, cwdPath)
+      set callbackCommand to quoted form of callbackPath & " --open-target " & quoted form of bundleId & " " & quoted form of cwdPath & " " & quoted form of openWorkspaceFirst & " " & quoted form of focusVSCodeWindow
+      do shell script callbackCommand
     end if
   end try
 end run
-
-on focusTarget(bundleId, cwdPath)
-  try
-    tell application id bundleId to activate
-  end try
-
-  if cwdPath is "" then return
-
-  set workspaceName to ""
-  try
-    set workspaceName to do shell script "/usr/bin/basename " & quoted form of cwdPath
-  end try
-
-  try
-    tell application "System Events"
-      set targetProcesses to application processes whose bundle identifier is bundleId
-      if (count of targetProcesses) is 0 then return
-      set targetProcess to item 1 of targetProcesses
-      set frontmost of targetProcess to true
-      repeat with appWindow in windows of targetProcess
-        set windowTitle to ""
-        try
-          set windowTitle to name of appWindow
-        end try
-        if (workspaceName is not "" and windowTitle contains workspaceName) or windowTitle contains cwdPath then
-          try
-            perform action "AXRaise" of appWindow
-          end try
-          return
-        end if
-      end repeat
-    end tell
-  end try
-end focusTarget
 OSA
     ;;
   Linux)

@@ -57,14 +57,19 @@ default. Set shared `notifications.locale` or `AI_SESSION_NOTIFIER_LOCALE` to
 
 ## Return to Session
 
-On macOS, the adapter records the terminal or VS Code bundle that launched
-Kimi Code. Clicking the notification activates that app; the prominent dialog
-also tries to raise a window whose title matches the workspace. Windows uses a
-similar title match across VS Code and common terminal applications.
+On macOS, both the system notification and the prominent dialog use the same
+workspace-aware return callback. For VS Code, it sends the full saved working
+directory through VS Code's bundled CLI so the editor can select the existing
+workspace window. If that CLI is unavailable, it falls back to the previous
+`AXRaise` and `AXMain` title match. Terminal-hosted sessions still activate
+their originating terminal. Windows uses a similar title match across VS Code
+and common terminal applications.
 
-Kimi Code currently has no documented session deep link. Exact tab/session
-selection is therefore best effort, while the saved session id and workspace
-remain available in AI Session Notifier's local registry.
+Kimi Code currently has no documented session deep link. The adapter can
+therefore target the correct workspace window, but it cannot guarantee exact
+selection between multiple Kimi history entries inside that same workspace.
+The saved session id and workspace remain available in AI Session Notifier's
+local registry.
 
 ## Privacy
 

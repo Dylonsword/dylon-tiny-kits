@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
@@ -291,6 +292,77 @@ class HookTests(unittest.TestCase):
 
         event = self.events()[0]
         self.assertIn("turn stopped", str(event["title"]).lower())
+
+    def test_kimi_macos_banner_routes_through_workspace_callback(self) -> None:
+        fake_bin = self.root / "fake-bin"
+        fake_bin.mkdir()
+        capture = self.root / "terminal-notifier.args"
+
+        fake_uname = fake_bin / "uname"
+        fake_uname.write_text("#!/bin/sh\nprintf 'Darwin\\n'\n", encoding="utf-8")
+        fake_uname.chmod(0o700)
+
+        fake_notifier = fake_bin / "terminal-notifier"
+        fake_notifier.write_text(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$AI_SESSION_NOTIFIER_CAPTURE\"\n",
+            encoding="utf-8",
+        )
+        fake_notifier.chmod(0o700)
+
+        config_dir = self.root / "config"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        (config_dir / "config.json").write_text(
+            json.dumps(
+                {
+                    "notifications": {
+                        "dialogs": False,
+                        "ignoreDnD": False,
+                        "sound": False,
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        self.env.pop("AI_SESSION_NOTIFIER_DRY_RUN")
+        self.env["PATH"] = f"{fake_bin}{os.pathsep}{self.env['PATH']}"
+        self.env["AI_SESSION_NOTIFIER_CAPTURE"] = str(capture)
+        self.env["__CFBundleIdentifier"] = "com.microsoft.VSCode"
+        self.invoke(
+            KIMI_HOOK,
+            {
+                "hook_event_name": "Stop",
+                "session_id": "kimi-window-route",
+                "cwd": "/tmp/kimi-target-workspace",
+            },
+        )
+
+        notifier_args = capture.read_text(encoding="utf-8").splitlines()
+        self.assertIn("-execute", notifier_args)
+        execute_command = notifier_args[notifier_args.index("-execute") + 1]
+        self.assertIn("--open-target", execute_command)
+        self.assertIn("/tmp/kimi-target-workspace", execute_command)
+        self.assertNotIn("-activate", notifier_args)
+
+    @unittest.skipUnless(sys.platform == "darwin", "AppleScript callback runs only on macOS")
+    def test_kimi_workspace_callback_applescript_compiles(self) -> None:
+        additions_probe = subprocess.run(
+            ["/usr/bin/osascript", "-e", 'do shell script "true"'],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if additions_probe.returncode != 0:
+            self.skipTest("Standard Additions are unavailable in this sandbox")
+
+        result = subprocess.run(
+            [str(KIMI_HOOK), "--open-target", "", "", "false", "true"],
+            env=self.env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_concurrent_claude_events_remain_valid_jsonl(self) -> None:
         def send(index: int) -> None:

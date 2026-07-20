@@ -181,7 +181,7 @@ macOS 上的 VS Code Codex 会话会依次尝试：
 3. 打开 `vscode://openai.chatgpt/local/<thread_id>`；
 4. 再次抬起匹配窗口。
 
-Codex 桌面端使用 `codex://threads/<thread_id>`；Claude Code 使用 `claude-cli://open` 目录链接。Kimi Code 目前没有公开的会话 deep link，因此只能激活原终端或 VS Code，并按工作区标题尽力抬起匹配窗口。Windows 也包含对应的标题匹配逻辑。
+Codex 桌面端使用 `codex://threads/<thread_id>`；Claude Code 使用 `claude-cli://open` 目录链接。Kimi Code 目前没有公开的会话 deep link；在 macOS 上，系统通知点击和弹窗按钮都会把完整工作区路径交给 VS Code 自带 CLI，由编辑器选择已有窗口，找不到 CLI 时再通过 `AXRaise` 与 `AXMain` 按标题匹配，但仍无法保证在同一工作区的多条 Kimi 历史会话之间精确切换。Windows 也包含对应的标题匹配逻辑。
 
 这里必须诚实地说是“尽力跳回”：VS Code 和宿主应用并没有在所有配置中提供一个稳定的公开参数，用来精确指定某个已存在的窗口。macOS 的窗口抬起还需要给 System Events 辅助功能权限。匹配失败时，工具仍会退回到正常打开工作区和会话链接。
 
